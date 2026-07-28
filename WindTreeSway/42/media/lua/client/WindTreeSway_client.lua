@@ -111,34 +111,88 @@ end
 -- Detection des arbres
 ---------------------------------------------------------------------------
 
+local instanceofErrorLogged = false
+local diagnosticDumpDone = false
+
+local function getClassSimpleName(obj)
+    local ok, cls = pcall(function() return obj:getClass():getSimpleName() end)
+    if ok then return cls end
+    return nil
+end
+
 local function isTree(obj)
     if not obj then return false end
+
     local ok, res = pcall(luautils.instanceof, obj, "IsoTree")
-    if ok and res then return true end
+    if ok then
+        if res then return true end
+    elseif not instanceofErrorLogged then
+        instanceofErrorLogged = true
+        log("luautils.instanceof(obj, 'IsoTree') a echoue -> " .. tostring(res))
+    end
+
+    -- repli : detection par nom de classe si instanceof echoue/renvoie false
+    local cls = getClassSimpleName(obj)
+    if cls and string.find(string.lower(cls), "tree") then return true end
     return false
+end
+
+local function dumpNearbyClassNames(square)
+    if diagnosticDumpDone then return end
+    diagnosticDumpDone = true
+
+    local seen = {}
+    local list = {}
+    local objects = square:getObjects()
+    if objects then
+        for i = 0, objects:size() - 1 do
+            local cls = getClassSimpleName(objects:get(i))
+            if cls and not seen[cls] then
+                seen[cls] = true
+                table.insert(list, cls)
+            end
+        end
+    end
+    log("Diagnostic: classes d'objets trouvees sur la case du joueur -> " .. table.concat(list, ", "))
 end
 
 local function collectNearbyTrees()
     local player = getPlayer()
-    if not player then return end
+    if not player then
+        log("collectNearbyTrees: getPlayer() est nil")
+        return
+    end
     local square = player:getSquare()
-    if not square then return end
+    if not square then
+        log("collectNearbyTrees: player:getSquare() est nil")
+        return
+    end
+
+    dumpNearbyClassNames(square)
 
     local cell = getCell()
-    if not cell then return end
+    if not cell then
+        log("collectNearbyTrees: getCell() est nil")
+        return
+    end
 
     local px, py, pz = square:getX(), square:getY(), square:getZ()
     local found = {}
+    local squaresScanned, squaresWithObjects, objectsSeen, treesSeen = 0, 0, 0, 0
 
     for dx = -UPDATE_RADIUS, UPDATE_RADIUS do
         for dy = -UPDATE_RADIUS, UPDATE_RADIUS do
             local sq = cell:getGridSquare(px + dx, py + dy, pz)
             if sq then
+                squaresScanned = squaresScanned + 1
                 local objects = sq:getObjects()
-                if objects then
+                if objects and objects:size() > 0 then
+                    squaresWithObjects = squaresWithObjects + 1
                     for i = 0, objects:size() - 1 do
                         local obj = objects:get(i)
+                        objectsSeen = objectsSeen + 1
                         if isTree(obj) then
+                            treesSeen = treesSeen + 1
                             local key = tostring(obj)
                             found[key] = swayTargets[key] or {
                                 obj = obj,
@@ -152,6 +206,9 @@ local function collectNearbyTrees()
     end
 
     swayTargets = found
+    log(string.format(
+        "Rescan: %d cases scannees, %d avec objets, %d objets vus, %d arbres detectes",
+        squaresScanned, squaresWithObjects, objectsSeen, treesSeen))
 end
 
 ---------------------------------------------------------------------------
