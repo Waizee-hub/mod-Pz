@@ -131,12 +131,15 @@ end
 local function isTree(obj)
     if not obj then return false end
 
-    local ok, res = pcall(luautils.instanceof, obj, "IsoTree")
+    -- 'instanceof' est une fonction GLOBALE definie par luautils.lua, pas un
+    -- champ du tableau luautils (luautils.instanceof est nil -> l'appel
+    -- echouait silencieusement et aucun arbre n'etait jamais detecte).
+    local ok, res = pcall(instanceof, obj, "IsoTree")
     if ok then
         if res then return true end
     elseif not instanceofErrorLogged then
         instanceofErrorLogged = true
-        log("luautils.instanceof(obj, 'IsoTree') a echoue -> " .. tostring(res))
+        log("instanceof(obj, 'IsoTree') a echoue -> " .. tostring(res))
     end
 
     return false
