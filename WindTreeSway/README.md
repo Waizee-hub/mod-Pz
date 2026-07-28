@@ -5,23 +5,29 @@ Mod Project Zomboid qui fait osciller légèrement les arbres proches du joueur,
 
 ## Structure du mod (important, Build 42)
 
-Depuis le Build 42, PZ exige un sous-dossier versionné pour le `mod.info`,
-sinon le mod n'apparaît pas du tout dans la liste en jeu. La structure est
-donc :
+Depuis le Build 42, PZ exige un sous-dossier versionné contenant `mod.info`
+**et** le `media/` du mod, plus un dossier `common/` (qui peut être vide,
+mais doit exister), sinon le mod n'apparaît pas du tout dans la liste en
+jeu. La structure est donc :
 
 ```
 WindTreeSway/
 ├── 42/
-│   └── mod.info
-└── common/
-    └── media/
-        └── lua/
-            └── client/
-                └── WindTreeSway_client.lua
+│   ├── mod.info
+│   ├── poster.png
+│   └── media/
+│       └── lua/
+│           └── client/
+│               └── WindTreeSway_client.lua
+└── common/          (vide, doit juste exister)
 ```
 
 Ne remets pas tout à plat dans `WindTreeSway/` directement : le `mod.info`
-doit être dans `WindTreeSway/42/mod.info`, pas à la racine.
+et le `media/` doivent être dans `WindTreeSway/42/`, pas à la racine.
+Note : cette convention n'est pas encore stabilisée/documentée
+officiellement pour le Build 42 (retours contradictoires selon les
+versions 42.x) — si ça ne marche toujours pas après ce changement, voir
+la section "Si le mod n'apparaît toujours pas" plus bas.
 
 ## Installation (test local)
 
@@ -33,6 +39,21 @@ doit être dans `WindTreeSway/42/mod.info`, pas à la racine.
 3. Charge une partie (idéalement en extérieur, près d'arbres).
 4. Ouvre `~/Zomboid/console.txt` (ou la console debug en jeu) et cherche les
    lignes commençant par `[WindTreeSway]`.
+
+## Si le mod n'apparaît toujours pas
+
+Le système de mods du Build 42 a eu plusieurs bugs connus selon la version
+exacte (42.7, 42.12, 42.13...). Pistes à essayer dans l'ordre :
+
+1. Vérifie qu'il n'y a pas de double dossier (ex. `mods\WindTreeSway\WindTreeSway\42\...`)
+   suite à une copie/décompression.
+2. Dans `~/Zomboid/mods/`, supprime un éventuel fichier `reset-mods_*` (ou
+   similaire) puis relance le jeu — ça force le jeu à rescanner les mods.
+3. Vérifie la console de lancement / les logs (`~/Zomboid/console.txt`) juste
+   après le lancement du jeu pour une erreur de parsing sur `mod.info`.
+4. Si rien ne marche, dis-le moi avec le contenu exact de
+   `~/Zomboid/console.txt` après un lancement — ça contient normalement une
+   erreur explicite sur le mod qui ne charge pas.
 
 ## Ce qui est fiable vs expérimental
 
@@ -67,7 +88,7 @@ Zomboid pour tester.
 ## Réglages
 
 Tout se trouve en haut de
-`common/media/lua/client/WindTreeSway_client.lua` :
+`42/media/lua/client/WindTreeSway_client.lua` :
 
 - `UPDATE_RADIUS` : rayon (en tuiles) autour du joueur où les arbres sont
   animés.

@@ -1,4 +1,5 @@
 name=Wind Tree Sway
 id=WindTreeSway
 description=Fait légèrement osciller les arbres proches du joueur, à une vitesse qui suit l'intensité du vent en jeu. Cible Build 42.19.
+poster=poster.png
 modversion=1
