@@ -114,9 +114,17 @@ end
 local instanceofErrorLogged = false
 local diagnosticDumpDone = false
 
-local function getClassSimpleName(obj)
-    local ok, cls = pcall(function() return obj:getClass():getSimpleName() end)
-    if ok then return cls end
+-- NOTE: obj:getClass():getSimpleName() n'est PAS utilisable depuis Lua ici
+-- (Kahlua ne supporte pas de chainer un appel sur l'objet Class Java
+-- renvoye -> ca leve une RuntimeException a chaque appel). On reste donc
+-- uniquement sur des methodes normalement exposees au Lua : instanceof et
+-- le nom du sprite.
+
+local function getSpriteName(obj)
+    local ok, sprite = pcall(function() return obj:getSprite() end)
+    if not ok or not sprite then return nil end
+    local ok2, name = pcall(function() return sprite:getName() end)
+    if ok2 then return name end
     return nil
 end
 
@@ -131,9 +139,6 @@ local function isTree(obj)
         log("luautils.instanceof(obj, 'IsoTree') a echoue -> " .. tostring(res))
     end
 
-    -- repli : detection par nom de classe si instanceof echoue/renvoie false
-    local cls = getClassSimpleName(obj)
-    if cls and string.find(string.lower(cls), "tree") then return true end
     return false
 end
 
@@ -141,19 +146,17 @@ local function dumpNearbyClassNames(square)
     if diagnosticDumpDone then return end
     diagnosticDumpDone = true
 
-    local seen = {}
     local list = {}
     local objects = square:getObjects()
     if objects then
         for i = 0, objects:size() - 1 do
-            local cls = getClassSimpleName(objects:get(i))
-            if cls and not seen[cls] then
-                seen[cls] = true
-                table.insert(list, cls)
-            end
+            local obj = objects:get(i)
+            local name = getSpriteName(obj) or "?"
+            if isTree(obj) then name = name .. "[IsoTree=true]" end
+            table.insert(list, name)
         end
     end
-    log("Diagnostic: classes d'objets trouvees sur la case du joueur -> " .. table.concat(list, ", "))
+    log("Diagnostic: sprites trouves sur la case du joueur -> " .. table.concat(list, ", "))
 end
 
 local function collectNearbyTrees()
