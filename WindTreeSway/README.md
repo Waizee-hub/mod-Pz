@@ -3,9 +3,30 @@
 Mod Project Zomboid qui fait osciller légèrement les arbres proches du joueur,
 à une vitesse/amplitude proportionnelle au vent en jeu.
 
+## Structure du mod (important, Build 42)
+
+Depuis le Build 42, PZ exige un sous-dossier versionné pour le `mod.info`,
+sinon le mod n'apparaît pas du tout dans la liste en jeu. La structure est
+donc :
+
+```
+WindTreeSway/
+├── 42/
+│   └── mod.info
+└── common/
+    └── media/
+        └── lua/
+            └── client/
+                └── WindTreeSway_client.lua
+```
+
+Ne remets pas tout à plat dans `WindTreeSway/` directement : le `mod.info`
+doit être dans `WindTreeSway/42/mod.info`, pas à la racine.
+
 ## Installation (test local)
 
-1. Copie le dossier `WindTreeSway/` dans ton dossier de mods PZ :
+1. Copie le dossier `WindTreeSway/` (avec sa structure `42/` + `common/`
+   intacte) dans ton dossier de mods PZ :
    - Windows : `%USERPROFILE%\Zomboid\mods\WindTreeSway`
    - Linux/Steam Deck : `~/Zomboid/mods/WindTreeSway`
 2. Lance le jeu, active le mod dans le menu Mods de l'écran d'accueil.
@@ -45,7 +66,8 @@ Zomboid pour tester.
 
 ## Réglages
 
-Tout se trouve en haut de `media/lua/client/WindTreeSway_client.lua` :
+Tout se trouve en haut de
+`common/media/lua/client/WindTreeSway_client.lua` :
 
 - `UPDATE_RADIUS` : rayon (en tuiles) autour du joueur où les arbres sont
   animés.
