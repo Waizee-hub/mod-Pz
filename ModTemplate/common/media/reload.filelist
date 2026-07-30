@@ -1,0 +1,6 @@
+# Fichiers Lua recharges a chaud par HotReload, dans l'ordre de chargement.
+# Le fichier server/ n'est pas liste : le watcher tourne cote client
+# (OnTick), le recharger depuis le client rebrancherait ses hooks au
+# mauvais endroit. Relance le jeu pour les changements cote server.
+media/lua/shared/ModTemplate.lua
+media/lua/client/ModTemplate_client.lua

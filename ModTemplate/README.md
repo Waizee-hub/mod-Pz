@@ -59,6 +59,29 @@ repo pour le detail des soucis rencontres sur ce point).
    d'exemple"** dans le spawn d'objets pour verifier que le script d'item et
    son icone se chargent bien.
 
+## Hot reload (dev)
+
+Le mod embarque un opt-in pour [PZModReload](https://github.com/deckard93/PZModReload)
+(MIT, par deckard93) : un mod-outil separe qui recharge le Lua a chaud en
+jeu, sans relancer PZ.
+
+1. Le mod watcher est installe en local (hors de ce repo, c'est un outil
+   externe) dans `~/Zomboid/mods/ModHotReloadLocal`.
+2. Dans le menu Mods, active **`[Dev] Hot Reload Mods (local)`** en plus de
+   **`Mod Template`**, puis charge une partie.
+3. Edite un `.lua` liste dans `common/media/reload.filelist` (shared/client
+   uniquement — le serveur n'est pas rechargeable a chaud par ce mecanisme,
+   il faut relancer pour ca), sauvegarde.
+4. Lance `dev-reload.ps1` (dans ce dossier) : ca synchronise le mod vers
+   `~/Zomboid/mods/ModTemplate` et met a jour `reload.trigger`. Le
+   rechargement se fait en jeu dans la seconde qui suit (jeu non en pause),
+   avec un message `[HotReload] ModTemplate: N file(s)` affiche et logge.
+5. Pour ajouter un nouveau fichier au hot reload, liste-le dans
+   `common/media/reload.filelist` (un chemin par ligne, `media/...`).
+
+Limite : seul le Lua est recharge (pas les scripts d'objets, textures,
+traductions) — pour ca, relance le jeu normalement.
+
 ## Sources
 
 Structure et champs de `mod.info` bases sur la documentation PZwiki

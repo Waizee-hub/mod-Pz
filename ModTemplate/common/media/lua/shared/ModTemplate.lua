@@ -15,3 +15,11 @@ function ModTemplate.log(msg)
 end
 
 ModTemplate.log("shared charge (version " .. ModTemplate.VERSION .. ")")
+
+-- Opt-in pour le mod dev "[Dev] Hot Reload Mods (local)" (HotReload.lua) :
+-- s'il est actif a cote de ModTemplate, editer un fichier liste dans
+-- reload.filelist puis lancer dev-reload.ps1 recharge le Lua en jeu sans
+-- relancer PZ. Sans ce mod actif, ces 3 lignes ne font rien.
+HotReload = HotReload or {}
+HotReload.mods = HotReload.mods or {}
+HotReload.mods["ModTemplate"] = { enabled = function() return ModTemplate.debug end }
