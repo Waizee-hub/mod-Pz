@@ -1,0 +1,6 @@
+name=Mod Template
+id=ModTemplate
+description=Squelette de mod Project Zomboid (Build 42) : structure de dossiers standard, script Lua partage/client/serveur et un objet personnalise d'exemple, prets a etre renommes et etendus.
+poster=poster.png
+icon=icon.png
+modversion=1

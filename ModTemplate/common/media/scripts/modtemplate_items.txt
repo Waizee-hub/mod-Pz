@@ -1,0 +1,11 @@
+module ModTemplate
+{
+	item ExampleItem
+	{
+		DisplayCategory	=	Item,
+		Type			=	Normal,
+		DisplayName		=	Objet d'exemple,
+		Icon			=	ModTemplateExample,
+		Weight			=	0.1,
+	}
+}
