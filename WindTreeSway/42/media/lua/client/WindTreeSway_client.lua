@@ -1,40 +1,95 @@
 -- WindTreeSway_client.lua
 --
--- Objectif : faire osciller légèrement les arbres proches du joueur, avec une
--- vitesse/amplitude qui suit l'intensité du vent (Build 42.19).
+-- Objectif : faire legerement osciller les arbres meme par vent calme, en
+-- reutilisant le systeme NATIF de sway du jeu (celui qui fait deja bouger les
+-- arbres pendant les tempetes) plutot que de deplacer les sprites nous-memes.
 --
--- A LIRE AVANT DE JUGER LE RESULTAT :
--- La lecture du vent via ClimateManager est robuste (plusieurs noms de methode
--- candidats sont testes automatiquement, avec repli sur un vent "procedural"
--- si aucun n'est trouve). En revanche, Project Zomboid met en cache/rend par
--- blocs les objets du monde isometrique pour la performance, et il n'existe
--- pas de documentation publique confirmant une methode Lua pour decaler
--- visuellement, image par image, un IsoObject deja pose sur la carte.
+-- HISTORIQUE DES ECHECS :
 --
--- Ce script teste donc, sur le premier arbre trouve, plusieurs methodes
--- candidates et log clairement dans console.txt laquelle fonctionne (le cas
--- echeant) sur cette version du jeu. Si aucune ne fonctionne, seule la
--- lecture du vent reste active, avec un log explicite -> il suffit de me
--- transmettre ces lignes de console.txt pour que je corrige precisement le
--- point de rendu au lieu de deviner.
+-- 1) Ecrire directement x1/y1/x2/y2 sur l'objet ObjectRenderEffects partage
+--    renvoye par IsoObject:getWindRenderEffects(). Teste en jeu (build
+--    42.20.0) : plante a chaque tick avec
+--      java.lang.RuntimeException: attempted index of non-table
+--      at KahluaThread.tableSet
+--    Les champs publics x1..y4 sont bien la (confirme par decompilation),
+--    mais Kahlua ne permet pas d'ECRIRE un champ Java par simple assignation
+--    "objet.champ = valeur" -- seule la LECTURE fonctionne. Abandonne.
+--
+-- 2) Declencher l'effet natif "Vegetation_Rustle" via
+--    IsoObject:setRenderEffect(RenderEffectType.Vegetation_Rustle, true)
+--    (IsoTree s'en sert en interne pour son effet de coupe). Teste en jeu :
+--    plante immediatement des l'evaluation de l'argument avec
+--      java.lang.RuntimeException: attempted index: Vegetation_Rustle of non-table: null
+--    Cause confirmee en decompilant zombie.iso.objects.RenderEffectType.class :
+--    cette enum n'a AUCUNE annotation @UsedFromLua (grep du constant pool,
+--    zero reference a "UsedFromLua"). Le jeu ne l'expose donc pas comme
+--    variable globale Lua -- "RenderEffectType" vaut nil cote Lua, impossible
+--    d'obtenir une instance de cet enum depuis un script. Abandonne.
+--
+-- APPROCHE ACTUELLE (validee par decompilation de
+-- zombie.iso.weather.ClimateManager.class, build 42.20.0) :
+--
+-- Plutot que de manipuler des ObjectRenderEffects par arbre, on agit
+-- directement sur la valeur de vent AMBIANTE que le moteur utilise deja pour
+-- animer TOUT le feuillage natif (arbres ET buissons) :
+--   zombie.iso.weather.ClimateManager$ClimateFloat (annotee @UsedFromLua,
+--   donc pleinement accessible -- champs prives mais methodes publiques
+--   exposees) est la classe qui porte windIntensity. Chaque tick,
+--   ClimateManager.updateWindTick() calcule :
+--     windTickFinal = clamp01(windIntensity.finalValue + bruit)
+--   et c'est CETTE valeur que ObjectRenderEffects.updateStatic() lit pour
+--   faire osciller le pool partage d'effets de vent (WIND_EFFECTS /
+--   WIND_EFFECTS_TREES) qui anime tous les arbres/buissons "moveWithWind".
+--
+--   ClimateFloat.calculate() :
+--     finalValue = (isOverride et interpolate>0)
+--                    ? lerp(interpolate, ..., override)
+--                    : internalValue   -- valeur reelle simulee par la meteo
+--
+--   setOverride(cible, interpolate) met isOverride=true automatiquement et
+--   force finalValue vers "cible" -- avec interpolate=1.0, le lerp donne
+--   directement la cible, sans a-coup. C'est EXACTEMENT le mecanisme que le
+--   jeu utilise en interne pour l'option sandbox "Endless Weather" (voir
+--   ClimateManager.updateSandboxOverrides) -- donc un detour officiel et
+--   deja eprouve, pas un hack.
+--
+--   PIEGE (rencontre et corrige en jeu) : NE PAS appeler setOverrideValue()
+--   en plus de setOverride(). Sa vraie implementation est
+--     isOverrideValue = v; isOverride = v;
+--   donc setOverrideValue(false) desactive isOverride en meme temps --
+--   annulait silencieusement le setOverride() precedent, chaque tick.
+--   Diagnostic confirme par log : finalValue restait colle a internalValue
+--   (le vent reel) au lieu de suivre WIND_FLOOR, alors qu'aucune erreur
+--   n'etait levee (les deux appels reussissaient individuellement, seul
+--   leur effet combine annulait tout).
+--
+--   Des que le vent reel (getInternalValue(), la valeur simulee independante
+--   de notre override) depasse WIND_FLOOR, on desactive l'override
+--   (setEnableOverride(false)) et finalValue revient instantanement a la
+--   vraie valeur meteo -- comportement des tempetes inchange, transition
+--   immediate sans le delai d'extinction qui affectait l'ancienne approche
+--   par arbre.
+--
+--   Avantage supplementaire : plus besoin de scanner/suivre les arbres pres
+--   du joueur -- un seul point d'ajustement global, beaucoup plus simple et
+--   fiable.
 
 local WindTreeSway = {}
 WindTreeSway.debug = true
 
 -- Reglages
-local UPDATE_RADIUS   = 12      -- rayon (en tuiles) autour du joueur a surveiller
-local RESCAN_MS       = 4000    -- intervalle (ms) entre deux re-scans des arbres proches
-local BASE_FREQ_HZ    = 0.35    -- vitesse d'oscillation par vent faible
-local MAX_FREQ_HZ     = 1.8     -- vitesse d'oscillation par vent fort
-local BASE_AMPLITUDE  = 0.8     -- amplitude (px) par vent faible
-local MAX_AMPLITUDE   = 3.2     -- amplitude (px) par vent fort
-local WIND_SMOOTHING  = 0.03    -- lissage des rafales (plus petit = plus lisse)
+local WIND_FLOOR = 0.38  -- plancher de vent ambiant force par temps calme (0..1,
+                          -- meme echelle que ClimateManager:getWindIntensity()).
+                          -- Confirme par decompilation de ObjectRenderEffects.update() :
+                          -- les 3 "windType" du pool partage ont des seuils
+                          -- differents (0.08 / 0.15 / 0.3, comparaison stricte
+                          -- <=) sous lesquels le sway reste a 0 -- 0.38 les
+                          -- depasse tous les trois avec une marge confortable.
+local CHECK_MS   = 1000  -- intervalle entre deux verifications/reapplications
+local INTERP     = 1.0   -- vitesse de transition vers WIND_FLOOR (1.0 = immediat)
 
-local swayTargets = {}
-local lastRescan = 0
-local windSmoothed = 0.35
-local capability = nil          -- nil = pas encore teste, false = aucune trouvee, sinon table candidate
-local lastWindLog = 0
+local WIND_INTENSITY_ID = 6  -- index de ClimateManager:getClimateFloat(), confirme
+                              -- par decompilation (initClimateFloat(6, "WIND_INTENSITY"))
 
 local function log(msg)
     if WindTreeSway.debug then
@@ -42,254 +97,120 @@ local function log(msg)
     end
 end
 
----------------------------------------------------------------------------
--- Lecture du vent
----------------------------------------------------------------------------
+-- L'option graphique "doWindSpriteEffects" (menu Options > Affichage > "Wind
+-- Sprite Effects") est DESACTIVEE PAR DEFAUT dans PZ (confirme par
+-- decompilation de zombie.core.Core.class : valeur par defaut = false). Sans
+-- elle, ObjectRenderEffects.update() remet tous les offsets a 0 quel que soit
+-- le vent -- donc sans cette option, aucun sway n'est jamais visible, meme
+-- avec notre plancher de vent applique. On la force ici pour que le mod
+-- fonctionne sans configuration manuelle.
+-- Flags "log une seule fois" pour ne pas spammer si un appel echoue en boucle.
+local windSpriteEffectsErrorLogged = false
+local overrideErrorLogged = false
 
-local WIND_METHOD_CANDIDATES = { "getWindSpeed", "getWindIntensity", "getWindStrength", "getWind" }
-local resolvedWindMethod = nil
-local windMethodResolved = false
-
-local function tryReadRealWind()
-    local ok, climate = pcall(getClimateManager)
-    if not ok or not climate then return nil end
-
-    if not windMethodResolved then
-        windMethodResolved = true
-        for _, name in ipairs(WIND_METHOD_CANDIDATES) do
-            local fn = climate[name]
-            if fn then
-                local okCall, val = pcall(fn, climate)
-                if okCall and type(val) == "number" then
-                    resolvedWindMethod = name
-                    log("Vent lu via ClimateManager:" .. name .. "() = " .. tostring(val))
-                    break
-                end
-            end
+local function ensureWindSpriteEffectsEnabled()
+    local ok, core = pcall(getCore)
+    if not ok or not core then
+        if not windSpriteEffectsErrorLogged then
+            windSpriteEffectsErrorLogged = true
+            log("getCore() indisponible -> " .. tostring(core))
         end
-        if not resolvedWindMethod then
-            log("Aucune methode de vent connue trouvee sur ClimateManager -> repli sur un vent procedural.")
-        end
-    end
-
-    if not resolvedWindMethod then return nil end
-    local fn = climate[resolvedWindMethod]
-    local ok2, val = pcall(fn, climate)
-    if not ok2 or type(val) ~= "number" then return nil end
-    if val > 1.5 then val = val / 10.0 end -- au cas ou l'echelle reelle est 0..10 plutot que 0..1
-    if val < 0 then val = 0 end
-    if val > 1 then val = 1 end
-    return val
-end
-
-local function proceduralWind()
-    local t = getTimestampMs() / 1000.0
-    local n = 0.5
-        + 0.25 * math.sin(t * 0.11)
-        + 0.15 * math.sin(t * 0.037 + 1.7)
-        + 0.10 * math.sin(t * 0.021 + 4.2)
-    if n < 0 then n = 0 end
-    if n > 1 then n = 1 end
-    return n
-end
-
-local function currentWind()
-    local raw = tryReadRealWind()
-    if raw == nil then raw = proceduralWind() end
-    windSmoothed = windSmoothed + (raw - windSmoothed) * WIND_SMOOTHING
-
-    local now = getTimestampMs()
-    if WindTreeSway.debug and (now - lastWindLog) > 5000 then
-        lastWindLog = now
-        log(string.format("Vent actuel = %.2f (source: %s)", windSmoothed,
-            resolvedWindMethod or "fallback procedural"))
-    end
-    return windSmoothed
-end
-
----------------------------------------------------------------------------
--- Detection des arbres
----------------------------------------------------------------------------
-
-local instanceofErrorLogged = false
-local diagnosticDumpDone = false
-
--- NOTE: obj:getClass():getSimpleName() n'est PAS utilisable depuis Lua ici
--- (Kahlua ne supporte pas de chainer un appel sur l'objet Class Java
--- renvoye -> ca leve une RuntimeException a chaque appel). On reste donc
--- uniquement sur des methodes normalement exposees au Lua : instanceof et
--- le nom du sprite.
-
-local function getSpriteName(obj)
-    local ok, sprite = pcall(function() return obj:getSprite() end)
-    if not ok or not sprite then return nil end
-    local ok2, name = pcall(function() return sprite:getName() end)
-    if ok2 then return name end
-    return nil
-end
-
-local function isTree(obj)
-    if not obj then return false end
-
-    -- 'instanceof' est une fonction GLOBALE definie par luautils.lua, pas un
-    -- champ du tableau luautils (luautils.instanceof est nil -> l'appel
-    -- echouait silencieusement et aucun arbre n'etait jamais detecte).
-    local ok, res = pcall(instanceof, obj, "IsoTree")
-    if ok then
-        if res then return true end
-    elseif not instanceofErrorLogged then
-        instanceofErrorLogged = true
-        log("instanceof(obj, 'IsoTree') a echoue -> " .. tostring(res))
-    end
-
-    return false
-end
-
-local function dumpNearbyClassNames(square)
-    if diagnosticDumpDone then return end
-    diagnosticDumpDone = true
-
-    local list = {}
-    local objects = square:getObjects()
-    if objects then
-        for i = 0, objects:size() - 1 do
-            local obj = objects:get(i)
-            local name = getSpriteName(obj) or "?"
-            if isTree(obj) then name = name .. "[IsoTree=true]" end
-            table.insert(list, name)
-        end
-    end
-    log("Diagnostic: sprites trouves sur la case du joueur -> " .. table.concat(list, ", "))
-end
-
-local function collectNearbyTrees()
-    local player = getPlayer()
-    if not player then
-        log("collectNearbyTrees: getPlayer() est nil")
         return
     end
-    local square = player:getSquare()
-    if not square then
-        log("collectNearbyTrees: player:getSquare() est nil")
+    local ok2, enabled = pcall(function() return core:getOptionDoWindSpriteEffects() end)
+    if not ok2 then
+        if not windSpriteEffectsErrorLogged then
+            windSpriteEffectsErrorLogged = true
+            log("getOptionDoWindSpriteEffects() a echoue -> " .. tostring(enabled))
+        end
         return
     end
-
-    dumpNearbyClassNames(square)
-
-    local cell = getCell()
-    if not cell then
-        log("collectNearbyTrees: getCell() est nil")
-        return
-    end
-
-    local px, py, pz = square:getX(), square:getY(), square:getZ()
-    local found = {}
-    local squaresScanned, squaresWithObjects, objectsSeen, treesSeen = 0, 0, 0, 0
-
-    for dx = -UPDATE_RADIUS, UPDATE_RADIUS do
-        for dy = -UPDATE_RADIUS, UPDATE_RADIUS do
-            local sq = cell:getGridSquare(px + dx, py + dy, pz)
-            if sq then
-                squaresScanned = squaresScanned + 1
-                local objects = sq:getObjects()
-                if objects and objects:size() > 0 then
-                    squaresWithObjects = squaresWithObjects + 1
-                    for i = 0, objects:size() - 1 do
-                        local obj = objects:get(i)
-                        objectsSeen = objectsSeen + 1
-                        if isTree(obj) then
-                            treesSeen = treesSeen + 1
-                            local key = tostring(obj)
-                            found[key] = swayTargets[key] or {
-                                obj = obj,
-                                phase = (math.abs((px + dx) * 92837 + (py + dy) * 1291) % 1000) / 1000.0 * math.pi * 2,
-                            }
-                        end
-                    end
-                end
-            end
+    if enabled == false then
+        local ok3, err3 = pcall(function() core:setOptionDoWindSpriteEffects(true) end)
+        if not ok3 and not windSpriteEffectsErrorLogged then
+            windSpriteEffectsErrorLogged = true
+            log("setOptionDoWindSpriteEffects(true) a echoue -> " .. tostring(err3))
+        elseif ok3 then
+            log("Option 'Wind Sprite Effects' etait desactivee -> activee automatiquement.")
         end
     end
-
-    swayTargets = found
-    log(string.format(
-        "Rescan: %d cases scannees, %d avec objets, %d objets vus, %d arbres detectes",
-        squaresScanned, squaresWithObjects, objectsSeen, treesSeen))
 end
 
----------------------------------------------------------------------------
--- Application de l'oscillation (experimental, voir note en tete de fichier)
----------------------------------------------------------------------------
-
-local OFFSET_CANDIDATES = {
-    { target = "sprite", method = "setOffsetPixelsX" },
-    { target = "sprite", method = "setRenderOffsetX" },
-    { target = "object", method = "setRenderOffsetX" },
-    { target = "object", method = "setDrawOffsetX" },
-}
-
-local function resolveCapability(entry)
-    local obj = entry.obj
-    local sprite = (obj.getSprite and obj:getSprite()) or nil
-
-    for _, candidate in ipairs(OFFSET_CANDIDATES) do
-        local target = (candidate.target == "sprite") and sprite or obj
-        if target and target[candidate.method] then
-            local ok, err = pcall(target[candidate.method], target, 0)
-            if ok then
-                log("Methode de decalage visuel trouvee : " .. candidate.target .. ":" .. candidate.method .. "()")
-                return candidate
-            else
-                log("Echec test " .. candidate.target .. ":" .. candidate.method .. "() -> " .. tostring(err))
-            end
-        end
-    end
-
-    log("Aucune methode de decalage visuel disponible sur cette version du jeu.")
-    log("=> Seule la lecture du vent reste active. Merci de transmettre ces lignes de console.txt pour corriger le hook de rendu.")
-    return false
-end
-
-local function applySway(entry, wind)
-    if capability == nil then
-        capability = resolveCapability(entry)
-    end
-    if capability == false then return end
-
-    local obj = entry.obj
-    local sprite = (obj.getSprite and obj:getSprite()) or nil
-    local target = (capability.target == "sprite") and sprite or obj
-    if not target then return end
-
-    local freq = BASE_FREQ_HZ + (MAX_FREQ_HZ - BASE_FREQ_HZ) * wind
-    local amplitude = BASE_AMPLITUDE + (MAX_AMPLITUDE - BASE_AMPLITUDE) * wind
-    local t = getTimestampMs() / 1000.0
-    local offset = math.sin(t * freq * math.pi * 2 + entry.phase) * amplitude
-
-    pcall(target[capability.method], target, offset)
-end
-
----------------------------------------------------------------------------
--- Boucle principale
----------------------------------------------------------------------------
+local overriding = false
+local lastCheck = 0
+local lastLog = 0
 
 local function onTick()
     local now = getTimestampMs()
-    if now - lastRescan > RESCAN_MS then
-        lastRescan = now
-        collectNearbyTrees()
+    if now - lastCheck < CHECK_MS then return end
+    lastCheck = now
+
+    ensureWindSpriteEffectsEnabled()
+
+    local ok, climate = pcall(getClimateManager)
+    if not ok or not climate then return end
+
+    local ok2, windFloat = pcall(function() return climate:getClimateFloat(WIND_INTENSITY_ID) end)
+    if not ok2 or not windFloat then return end
+
+    local ok3, internal = pcall(function() return windFloat:getInternalValue() end)
+    if not ok3 or type(internal) ~= "number" then return end
+
+    if internal < WIND_FLOOR then
+        -- IMPORTANT : ne PAS appeler setOverrideValue() ici. Sa vraie
+        -- implementation (confirmee par decompilation) est
+        --   isOverrideValue = v; isOverride = v;
+        -- donc setOverrideValue(false) desactive isOverride en meme temps --
+        -- exactement ce qui annulait silencieusement le setOverride()
+        -- precedent (bug trouve via le diagnostic finalValue/windTickFinal :
+        -- finalValue restait colle a internalValue au lieu de suivre
+        -- WIND_FLOOR). setOverride() seul active deja isOverride=true, et
+        -- isOverrideValue reste a son defaut (false, mis une fois par le jeu
+        -- via updateSandboxOverrides en Vanilla), ce qui est le comportement
+        -- voulu (blend depuis internalValue, pas overrideInternal).
+        local okA, errA = pcall(function() windFloat:setOverride(WIND_FLOOR, INTERP) end)
+        if not okA and not overrideErrorLogged then
+            overrideErrorLogged = true
+            log("setOverride a echoue -> " .. tostring(errA))
+        end
+        if not overriding then
+            overriding = true
+            log(string.format("vent reel=%.2f < plancher=%.2f -> plancher de vent applique", internal, WIND_FLOOR))
+        end
+    elseif overriding then
+        overriding = false
+        pcall(function() windFloat:setEnableOverride(false) end)
+        log(string.format("vent reel=%.2f >= plancher=%.2f -> plancher de vent leve", internal, WIND_FLOOR))
     end
 
-    local wind = currentWind()
-    for _, entry in pairs(swayTargets) do
-        applySway(entry, wind)
+    if WindTreeSway.debug and now - lastLog > 5000 then
+        lastLog = now
+        -- Diagnostic complet : on relit finalValue APRES avoir applique
+        -- l'override, pour verifier que le mecanisme agit vraiment (et pas
+        -- seulement que l'appel n'a pas plante).
+        local okF, finalVal = pcall(function() return windFloat:getFinalValue() end)
+        local okT, tickFinal = pcall(function() return ClimateManager.getWindTickFinal() end)
+        local okO, coreOpt = pcall(function() return getCore():getOptionDoWindSpriteEffects() end)
+        log(string.format(
+            "vent reel=%.2f (plancher=%.2f) -> override actif=%s | finalValue=%s | windTickFinal=%s | doWindSpriteEffects=%s",
+            internal, WIND_FLOOR, tostring(overriding),
+            okF and string.format("%.2f", finalVal) or ("ERR:" .. tostring(finalVal)),
+            okT and string.format("%.2f", tickFinal) or ("ERR:" .. tostring(tickFinal)),
+            okO and tostring(coreOpt) or ("ERR:" .. tostring(coreOpt))))
     end
 end
 
 Events.OnTick.Add(onTick)
 
 Events.OnGameStart.Add(function()
-    log("Mod charge (cible Build 42.19). Debug=" .. tostring(WindTreeSway.debug))
+    log("Mod charge (build 42.20.0). Plancher de vent ambiant = " .. tostring(WIND_FLOOR) .. ".")
 end)
+
+-- Opt-in pour le mod dev "[Dev] Hot Reload Mods (local)" (voir dev-reload.ps1
+-- a la racine du mod) : permet d'iterer sur les reglages ci-dessus sans
+-- relancer le jeu.
+HotReload = HotReload or {}
+HotReload.mods = HotReload.mods or {}
+HotReload.mods["WindTreeSway"] = { enabled = function() return WindTreeSway.debug end }
 
 return WindTreeSway

@@ -1,14 +1,90 @@
-# Wind Tree Sway (Build 42.19)
+# Wind Tree Sway (Build 42.20)
 
-Mod Project Zomboid qui fait osciller légèrement les arbres proches du joueur,
-à une vitesse/amplitude proportionnelle au vent en jeu.
+Mod Project Zomboid qui fait osciller legerement les arbres proches du
+joueur meme par temps calme, en reutilisant le systeme natif de sway du jeu
+(celui qui anime deja les arbres pendant les tempetes) plutot qu'un hack
+maison.
 
-## Structure du mod (important, Build 42)
+## Comment ca marche (et pourquoi ca ne marchait pas avant)
 
-Depuis le Build 42, PZ exige un sous-dossier versionné contenant `mod.info`
-**et** le `media/` du mod, plus un dossier `common/` (qui peut être vide,
-mais doit exister), sinon le mod n'apparaît pas du tout dans la liste en
-jeu. La structure est donc :
+Le jeu a deja un systeme de sway des arbres/buissons, entierement natif
+(`zombie.iso.objects.ObjectRenderEffects`) : chaque arbre "moveWithWind"
+partage un des 45 objets d'effet du pool (15 slots x 3 types de vegetation),
+qui expose 4 coins (`x1..y4`) lus directement par le rendu -- les coins 1&2
+sont le sommet de l'arbre (celui qui bouge), les coins 3&4 la base (fixe).
+Ce pool est anime chaque tick par `ObjectRenderEffects.updateStatic()`, qui
+lit une seule valeur : `ClimateManager.getWindTickFinal()`.
+
+Ce mecanisme est desactive par un seuil interne : des que cette valeur de
+vent (0..1) est sous ~0.08 a 0.3 selon le type de vegetation, le code natif
+force ces coins a 0 -- d'ou l'absence totale de sway par temps calme, alors
+que le systeme est pret et fonctionnel, juste inactif. Ce n'est **pas**
+documente publiquement ; identifie en decompilant `projectzomboid.jar` (voir
+plus bas).
+
+**Tentative 1 (abandonnee) :** ecrire directement `x1/y1/x2/y2` sur l'objet
+d'effet partage, chaque tick, avec notre propre oscillation. Teste en jeu :
+ca plante systematiquement avec `java.lang.RuntimeException: attempted index
+of non-table` (Kahlua refuse l'assignation `objet.champ = valeur` sur cette
+classe Java -- la lecture des champs publics marche, pas l'ecriture).
+
+**Tentative 2 (abandonnee) :** declencher l'effet natif `Vegetation_Rustle`
+par arbre via `IsoObject:setRenderEffect(RenderEffectType.Vegetation_Rustle,
+true)` (`IsoTree` s'en sert en interne pour son effet de coupe). Teste en
+jeu : plante immediatement avec `attempted index: Vegetation_Rustle of
+non-table: null`. Cause confirmee en decompilant
+`zombie.iso.objects.RenderEffectType.class` : cette enum n'a **aucune**
+annotation `@UsedFromLua` (verifie dans le constant-pool du bytecode) -- le
+jeu ne l'expose donc pas du tout comme variable Lua, impossible d'obtenir une
+instance de cet enum depuis un script cote mod.
+
+**Approche actuelle :** au lieu de manipuler des `ObjectRenderEffects` par
+arbre, on agit directement sur la valeur de vent AMBIANTE qui alimente tout
+le systeme natif. `ClimateManager.getWindTickFinal()` est calculee chaque
+tick a partir de `windIntensity.finalValue` (voir `updateWindTick()`), et
+`windIntensity` est une instance de
+`ClimateManager$ClimateFloat` -- une classe **bien annotee `@UsedFromLua`**
+cette fois (confirme par decompilation), avec des methodes publiques
+`setOverride(cible, interpolation)` / `setOverrideValue(bool)` /
+`setEnableOverride(bool)`. C'est **exactement** le mecanisme que le jeu
+utilise en interne pour l'option sandbox "Endless Weather"
+(`ClimateManager.updateSandboxOverrides`) -- donc un detour officiel et deja
+eprouve par le moteur, pas un hack.
+
+Chaque seconde, le mod lit `windIntensity:getInternalValue()` (la valeur
+reelle simulee par la meteo, independante de notre override) :
+- si elle est sous `WIND_FLOOR`, on force `finalValue` vers `WIND_FLOOR` via
+  `setOverride(WIND_FLOOR, 1.0)` (interpolation=1.0 -> effet immediat, sans
+  a-coup) ;
+- des qu'elle depasse `WIND_FLOOR` (debut de tempete), on desactive
+  l'override (`setEnableOverride(false)`) et `finalValue` revient
+  instantanement a la vraie valeur meteo -- comportement des tempetes
+  inchange, transition immediate.
+
+Cette valeur etant globale (lue par tout le systeme de vent ambiant), plus
+besoin de scanner/suivre les arbres pres du joueur : un seul point
+d'ajustement, beaucoup plus simple et fiable que les deux tentatives
+precedentes, et sans le delai d'extinction qui affectait l'approche par
+arbre.
+
+**Piege supplementaire (corrige) :** meme avec `windTickFinal` correctement
+force au-dessus du seuil, rien ne bougeait -- cause trouvee en decompilant
+`zombie.core.Core.class` : l'option graphique `doWindSpriteEffects` (menu
+Options > Affichage > "Wind Sprite Effects") est **desactivee par defaut**
+(`false`). Sans elle, `ObjectRenderEffects.update()` remet systematiquement
+tous les offsets a 0, quel que soit le vent. Le mod force donc cette option a
+`true` au demarrage via `getCore():setOptionDoWindSpriteEffects(true)`
+(reverifie toutes les `CHECK_MS`), pour ne pas dependre d'une configuration
+manuelle du joueur.
+
+Autre point confirme par decompilation de `ObjectRenderEffects.update(float,
+float)` : le pool partage utilise 3 "windType" avec des seuils differents
+(0.08 / 0.15 / 0.3, comparaison stricte `<=`) sous lesquels le sway reste a
+0 -- d'ou `WIND_FLOOR = 0.38`, qui depasse les trois avec une marge
+confortable (0.30 pile sur le seuil le plus haut aurait laisse un tiers du
+feuillage immobile).
+
+## Structure du mod (Build 42)
 
 ```
 WindTreeSway/
@@ -16,18 +92,14 @@ WindTreeSway/
 │   ├── mod.info
 │   ├── poster.png
 │   └── media/
+│       ├── reload.trigger      (dev, hot reload)
+│       ├── reload.filelist     (dev, hot reload)
 │       └── lua/
 │           └── client/
 │               └── WindTreeSway_client.lua
-└── common/          (vide, doit juste exister)
+├── dev-reload.ps1              (dev, hot reload)
+└── common/                     (vide, doit exister -- exige par le Build 42)
 ```
-
-Ne remets pas tout à plat dans `WindTreeSway/` directement : le `mod.info`
-et le `media/` doivent être dans `WindTreeSway/42/`, pas à la racine.
-Note : cette convention n'est pas encore stabilisée/documentée
-officiellement pour le Build 42 (retours contradictoires selon les
-versions 42.x) — si ça ne marche toujours pas après ce changement, voir
-la section "Si le mod n'apparaît toujours pas" plus bas.
 
 ## Installation (test local)
 
@@ -35,64 +107,50 @@ la section "Si le mod n'apparaît toujours pas" plus bas.
    intacte) dans ton dossier de mods PZ :
    - Windows : `%USERPROFILE%\Zomboid\mods\WindTreeSway`
    - Linux/Steam Deck : `~/Zomboid/mods/WindTreeSway`
-2. Lance le jeu, active le mod dans le menu Mods de l'écran d'accueil.
-3. Charge une partie (idéalement en extérieur, près d'arbres).
+2. Lance le jeu, active le mod dans le menu Mods de l'ecran d'accueil.
+3. Charge une partie (idealement en exterieur, pres d'arbres, par temps
+   calme -- c'est justement le cas que ce mod cible).
 4. Ouvre `~/Zomboid/console.txt` (ou la console debug en jeu) et cherche les
-   lignes commençant par `[WindTreeSway]`.
+   lignes commencant par `[WindTreeSway]`.
 
-## Si le mod n'apparaît toujours pas
+## Hot reload (dev)
 
-Le système de mods du Build 42 a eu plusieurs bugs connus selon la version
-exacte (42.7, 42.12, 42.13...). Pistes à essayer dans l'ordre :
+Comme pour `ModTemplate`, le mod embarque un opt-in pour
+[PZModReload](https://github.com/deckard93/PZModReload) (MIT, deckard93),
+installe localement dans `~/Zomboid/mods/ModHotReloadLocal`.
 
-1. Vérifie qu'il n'y a pas de double dossier (ex. `mods\WindTreeSway\WindTreeSway\42\...`)
-   suite à une copie/décompression.
-2. Dans `~/Zomboid/mods/`, supprime un éventuel fichier `reset-mods_*` (ou
-   similaire) puis relance le jeu — ça force le jeu à rescanner les mods.
-3. Vérifie la console de lancement / les logs (`~/Zomboid/console.txt`) juste
-   après le lancement du jeu pour une erreur de parsing sur `mod.info`.
-4. Si rien ne marche, dis-le moi avec le contenu exact de
-   `~/Zomboid/console.txt` après un lancement — ça contient normalement une
-   erreur explicite sur le mod qui ne charge pas.
+1. Active `[Dev] Hot Reload Mods (local)` en plus de `Wind Tree Sway` dans le
+   menu Mods.
+2. Edite `42/media/lua/client/WindTreeSway_client.lua`, sauvegarde.
+3. Lance `dev-reload.ps1` (racine du mod) : ca synchronise vers
+   `~/Zomboid/mods/WindTreeSway` et declenche le rechargement en jeu (dans la
+   seconde qui suit, jeu non en pause).
 
-## Ce qui est fiable vs expérimental
+## Reglages
 
-- **Lecture du vent** : robuste. Le script essaie plusieurs noms de méthode
-  connus sur `ClimateManager` (`getWindSpeed`, `getWindIntensity`,
-  `getWindStrength`, `getWind`) et log celle qui fonctionne. Si aucune
-  n'existe dans le build 42.19, il utilise un vent "procédural" de secours
-  (rafales douces générées mathématiquement) pour que le reste du mod reste
-  utilisable.
+Tout se trouve en haut de `42/media/lua/client/WindTreeSway_client.lua` :
 
-- **Oscillation visuelle des arbres** : expérimentale. Project Zomboid met en
-  cache/rend le monde isométrique par blocs pour la performance, et il n'y a
-  pas de documentation publique confirmant une méthode Lua permettant de
-  décaler visuellement, image par image, un objet déjà posé sur la carte. Le
-  script teste automatiquement 4 méthodes candidates sur le premier arbre
-  trouvé et log clairement laquelle fonctionne (s'il y en a une).
+- `WIND_FLOOR` : plancher de vent ambiant force par temps calme (0 a 1, meme
+  echelle que `ClimateManager:getWindIntensity()`). Les arbres ont besoin
+  d'un vent plus fort que les buissons pour osciller (~0.3 cote moteur) ;
+  augmenter cette valeur si le sway reste trop discret, la baisser si
+  c'est trop frequent/visible.
+- `CHECK_MS` : intervalle entre deux verifications/reapplications du
+  plancher.
+- `INTERP` : vitesse de transition vers `WIND_FLOOR` (1.0 = immediat, sans
+  a-coup ; une valeur plus basse donnerait une transition plus progressive).
+- `WindTreeSway.debug` : passe a `false` pour couper les logs une fois que
+  tout fonctionne (coupe aussi le hot reload, qui est branche sur ce flag).
 
-## Si l'effet visuel ne se voit pas en jeu
+## Limite connue / a surveiller
 
-C'est possible et anticipé. Dans `console.txt`, cherche une ligne du type :
+Le mod agit sur une valeur globale (`windIntensity` de `ClimateManager`),
+donc l'effet touche **toute la carte**, pas seulement les environs du
+joueur -- en pratique difficile a distinguer d'une brise legere ambiante
+reelle, mais a garder en tete.
 
-```
-[WindTreeSway] Aucune methode de decalage visuel disponible sur cette version du jeu.
-```
-
-Envoie-moi ces lignes de log (et si possible les 20-30 lignes autour), et je
-corrigerai le point de rendu avec la vraie API au lieu de deviner. C'est
-beaucoup plus rapide de corriger à partir d'une erreur réelle du jeu que de
-deviner à l'aveugle depuis ici, où je n'ai pas d'installation de Project
-Zomboid pour tester.
-
-## Réglages
-
-Tout se trouve en haut de
-`42/media/lua/client/WindTreeSway_client.lua` :
-
-- `UPDATE_RADIUS` : rayon (en tuiles) autour du joueur où les arbres sont
-  animés.
-- `BASE_FREQ_HZ` / `MAX_FREQ_HZ` : vitesse d'oscillation par vent faible/fort.
-- `BASE_AMPLITUDE` / `MAX_AMPLITUDE` : amplitude (pixels) par vent faible/fort.
-- `WindTreeSway.debug` : passe à `false` pour couper les logs une fois que
-  tout fonctionne.
+Si le sandbox est configure sur un mode "Endless Weather" (option
+`ClimateCycle` != Vanilla), le jeu utilise ce meme mecanisme d'override en
+interne pour forcer un vent constant -- notre plancher pourrait alors se
+superposer a ce reglage. Non teste explicitement ; a surveiller si l'effet
+semble incoherent avec ce sandbox option actif.
