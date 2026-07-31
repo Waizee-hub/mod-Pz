@@ -53,10 +53,10 @@ eprouve par le moteur, pas un hack.
 
 Chaque seconde, le mod lit `windIntensity:getInternalValue()` (la valeur
 reelle simulee par la meteo, independante de notre override) :
-- si elle est sous `WIND_FLOOR`, on force `finalValue` vers `WIND_FLOOR` via
-  `setOverride(WIND_FLOOR, 1.0)` (interpolation=1.0 -> effet immediat, sans
-  a-coup) ;
-- des qu'elle depasse `WIND_FLOOR` (debut de tempete), on desactive
+- si elle est sous le plancher regle par le slider (voir "Reglages" plus
+  bas), on force `finalValue` vers ce plancher via `setOverride(plancher,
+  1.0)` (interpolation=1.0 -> effet immediat, sans a-coup) ;
+- des qu'elle depasse ce plancher (debut de tempete), on desactive
   l'override (`setEnableOverride(false)`) et `finalValue` revient
   instantanement a la vraie valeur meteo -- comportement des tempetes
   inchange, transition immediate.
@@ -80,7 +80,7 @@ manuelle du joueur.
 Autre point confirme par decompilation de `ObjectRenderEffects.update(float,
 float)` : le pool partage utilise 3 "windType" avec des seuils differents
 (0.08 / 0.15 / 0.3, comparaison stricte `<=`) sous lesquels le sway reste a
-0 -- d'ou `WIND_FLOOR = 0.38`, qui depasse les trois avec une marge
+0 -- d'ou la valeur par defaut de 0.38, qui depasse les trois avec une marge
 confortable (0.30 pile sur le seuil le plus haut aurait laisse un tiers du
 feuillage immobile).
 
@@ -128,16 +128,66 @@ installe localement dans `~/Zomboid/mods/ModHotReloadLocal`.
 
 ## Reglages
 
-Tout se trouve en haut de `42/media/lua/client/WindTreeSway_client.lua` :
+### Sliders en jeu (Options > Mods > Wind Tree Sway)
 
-- `WIND_FLOOR` : plancher de vent ambiant force par temps calme (0 a 1, meme
-  echelle que `ClimateManager:getWindIntensity()`). Les arbres ont besoin
-  d'un vent plus fort que les buissons pour osciller (~0.3 cote moteur) ;
-  augmenter cette valeur si le sway reste trop discret, la baisser si
-  c'est trop frequent/visible.
+4 curseurs, 2 categories (Arbres / Herbes et plantes) x (Amplitude, Vitesse),
+accessibles depuis le menu Options (menu principal ou en pause), pas besoin
+d'editer le code pour en changer.
+
+**Pourquoi 2 categories alors qu'il n'y a qu'un seul signal de vent cote
+moteur ?** Confirme par decompilation de `ObjectRenderEffects.update()` : il
+n'existe qu'**un seul** `ClimateFloat` global (`windIntensity`) qui alimente
+les deux pools de rendu -- `WIND_EFFECTS` (plantes/buissons) et
+`WIND_EFFECTS_TREES` (arbres) -- qui ne different que par leur **seuil
+d'activation fixe** : ~0.08 pour les plantes, ~0.3 pour les arbres (il faut
+plus de vent pour faire bouger un arbre qu'un brin d'herbe). Consequence
+physique incontournable : on peut faire osciller les plantes **sans** les
+arbres (en restant sous ~0.3), mais **pas l'inverse** -- des qu'on force
+assez de vent pour faire bouger un arbre, on a deja largement depasse le
+seuil des plantes, qui bougent donc aussi. Le mod calcule une cible par
+categorie puis applique au moteur leur **maximum** -- le plus proche d'un
+controle independant que le moteur permet.
+
+- **Amplitude (arbres / herbes-plantes)** (0 a **3.0**, defaut 0.38 pour les
+  arbres, 0 -- desactive -- pour les plantes) : force du plancher de vent
+  ambiant pour cette categorie (l'ancien `WIND_FLOOR`, seul reglage de la
+  toute premiere version). L'echelle naturelle du vent (`ClimateManager:
+  getWindIntensity()`) va de 0 a 1 -- aller au-dela est volontaire : le
+  moteur clampe `windTickFinal` a 1.0 (voir `updateWindTick()`), donc le
+  rendu du sway ne s'intensifie plus au-dela de 1.0, mais ca absorbe la
+  marge de bruit que le moteur ajoute meme en pleine tempete, garantissant
+  un sway colle au maximum natif EN PERMANENCE, sans les creux intermittents
+  qu'aucune meteo reelle ne peut eviter.
+- **Vitesse (arbres / herbes-plantes)** (0 a 20 cycles/minute, defaut 0) : a
+  0, le plancher de cette categorie reste parfaitement constant. Au-dela, le
+  mod fait lui-meme osciller son plancher dans le temps (onde sinusoidale,
+  +/-35% autour de l'amplitude de la categorie) a la frequence choisie -- le
+  moteur n'expose aucune frequence de sway reglable a Lua (voir l'historique
+  des echecs en tete du fichier lua), donc c'est le mod qui la simule.
+
+Avec les valeurs par defaut (plantes desactivees), le comportement est
+identique a la toute premiere version du mod (arbres seulement, plancher
+constant a 0.38).
+
+Attention (les 4 curseurs) : `windIntensity` est une valeur globale
+potentiellement lue par d'autres systemes que le sway (son ambiant,
+particules...) -- decompilation non exhaustive sur ces usages annexes, donc
+des valeurs tres au-dela de 1.0 (amplitude) pourraient avoir des effets de
+bord ailleurs. A surveiller en jeu si un curseur est pousse tres haut.
+
+### Constantes dans `42/media/lua/client/WindTreeSway_client.lua`
+
+- `DEFAULT_TREE_AMPLITUDE` / `DEFAULT_PLANT_AMPLITUDE` / `DEFAULT_SPEED` :
+  valeurs par defaut des sliders ci-dessus (voir `AMPLITUDE_MIN`/`MAX`/`STEP`
+  et `SPEED_MIN`/`MAX`/`STEP` juste apres pour ajuster les bornes des
+  curseurs, partagees par les deux categories).
+- `SWING_FRACTION` : amplitude du battement (+/-35% par defaut) que chaque
+  slider Vitesse applique autour de l'amplitude de sa categorie --
+  volontairement pas un 5e slider, pour garder l'interface simple.
 - `CHECK_MS` : intervalle entre deux verifications/reapplications du
-  plancher.
-- `INTERP` : vitesse de transition vers `WIND_FLOOR` (1.0 = immediat, sans
+  plancher (reduit a 100ms pour que l'oscillation controlee par les sliders
+  Vitesse paraisse fluide plutot qu'en marches d'escalier).
+- `INTERP` : vitesse de transition vers le plancher (1.0 = immediat, sans
   a-coup ; une valeur plus basse donnerait une transition plus progressive).
 - `WindTreeSway.debug` : passe a `false` pour couper les logs une fois que
   tout fonctionne (coupe aussi le hot reload, qui est branche sur ce flag).

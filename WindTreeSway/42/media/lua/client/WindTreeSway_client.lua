@@ -59,12 +59,12 @@
 --   donc setOverrideValue(false) desactive isOverride en meme temps --
 --   annulait silencieusement le setOverride() precedent, chaque tick.
 --   Diagnostic confirme par log : finalValue restait colle a internalValue
---   (le vent reel) au lieu de suivre WIND_FLOOR, alors qu'aucune erreur
+--   (le vent reel) au lieu de suivre le plancher, alors qu'aucune erreur
 --   n'etait levee (les deux appels reussissaient individuellement, seul
 --   leur effet combine annulait tout).
 --
 --   Des que le vent reel (getInternalValue(), la valeur simulee independante
---   de notre override) depasse WIND_FLOOR, on desactive l'override
+--   de notre override) depasse le plancher, on desactive l'override
 --   (setEnableOverride(false)) et finalValue revient instantanement a la
 --   vraie valeur meteo -- comportement des tempetes inchange, transition
 --   immediate sans le delai d'extinction qui affectait l'ancienne approche
@@ -77,25 +77,235 @@
 local WindTreeSway = {}
 WindTreeSway.debug = true
 
--- Reglages
-local WIND_FLOOR = 0.38  -- plancher de vent ambiant force par temps calme (0..1,
-                          -- meme echelle que ClimateManager:getWindIntensity()).
-                          -- Confirme par decompilation de ObjectRenderEffects.update() :
-                          -- les 3 "windType" du pool partage ont des seuils
-                          -- differents (0.08 / 0.15 / 0.3, comparaison stricte
-                          -- <=) sous lesquels le sway reste a 0 -- 0.38 les
-                          -- depasse tous les trois avec une marge confortable.
-local CHECK_MS   = 1000  -- intervalle entre deux verifications/reapplications
-local INTERP     = 1.0   -- vitesse de transition vers WIND_FLOOR (1.0 = immediat)
-
-local WIND_INTENSITY_ID = 6  -- index de ClimateManager:getClimateFloat(), confirme
-                              -- par decompilation (initClimateFloat(6, "WIND_INTENSITY"))
-
 local function log(msg)
     if WindTreeSway.debug then
         print("[WindTreeSway] " .. tostring(msg))
     end
 end
+
+-- Reglages
+local DEFAULT_TREE_AMPLITUDE  = 0.38  -- valeur par defaut historique (avant la
+                          -- separation arbres/plantes) -- 0..1, meme echelle
+                          -- que ClimateManager:getWindIntensity(). Confirme par
+                          -- decompilation de ObjectRenderEffects.update() : le
+                          -- pool "arbres" a un seuil (~0.3, comparaison stricte
+                          -- <=) sous lequel le sway reste a 0 -- 0.38 le
+                          -- depasse avec une marge confortable.
+local DEFAULT_PLANT_AMPLITUDE = 0     -- desactive par defaut (nouvelle
+                          -- categorie -- comportement inchange tant qu'on ne
+                          -- monte pas ce slider).
+local CHECK_MS   = 100   -- intervalle entre deux verifications/reapplications.
+                          -- Reduit de 1000 a 100 ms : avec les sliders de
+                          -- vitesse (voir plus bas), la cible n'est plus
+                          -- constante -- l'echantillonner seulement 1x/s la
+                          -- ferait ressortir en marches d'escalier plutot
+                          -- qu'une oscillation fluide.
+local INTERP     = 1.0   -- vitesse de transition vers le plancher (1.0 = immediat)
+
+local WIND_INTENSITY_ID = 6  -- index de ClimateManager:getClimateFloat(), confirme
+                              -- par decompilation (initClimateFloat(6, "WIND_INTENSITY"))
+
+-- 4 sliders en jeu (Options > Mods > Wind Tree Sway), 2 categories x
+-- (Amplitude, Vitesse) :
+--
+-- POURQUOI 2 CATEGORIES MAIS UN SEUL SIGNAL MOTEUR -- confirme par
+-- decompilation de ObjectRenderEffects.update() : il n'existe PAS deux
+-- valeurs de vent separees pour les arbres et les plantes/herbes cote moteur
+-- -- un seul ClimateFloat global (WIND_INTENSITY_ID=6) alimente les DEUX
+-- pools de rendu (WIND_EFFECTS pour les plantes/buissons, WIND_EFFECTS_TREES
+-- pour les arbres), qui ne different que par leur SEUIL d'activation fixe
+-- (~0.08 pour les plantes, ~0.3 pour les arbres -- les arbres ont besoin de
+-- plus de vent pour bouger). Consequence physique incontournable : on peut
+-- faire osciller les plantes SANS les arbres (rester sous ~0.3), mais on ne
+-- peut PAS faire osciller les arbres sans que les plantes suivent aussi
+-- (des qu'on depasse ~0.3, on a deja largement depasse ~0.08). Ce mod calcule
+-- donc une cible par categorie (chacune avec sa propre amplitude/vitesse) et
+-- applique au moteur leur MAXIMUM (voir getTargetWindFloor()) -- au plus
+-- proche d'un controle independant que le moteur permet.
+--
+-- AMPLITUDE (par categorie) -- meme role que l'ancien slider unique : la
+-- force du plancher de vent force par temps calme pour cette categorie. Les
+-- deux curseurs vont volontairement AU-DELA de 1.0, l'intensite de vent
+-- "maximale" actuelle du moteur -- ClimateManager.updateWindTick() calcule
+-- windTickFinal = clamp01(finalValue + bruit), donc au-dela de ~1.0 le rendu
+-- du sway lui-meme ne peut plus s'intensifier davantage (clamp01 le recolle
+-- a 1.0). Ce que ca apporte quand meme : le bruit ajoute par le moteur peut
+-- faire redescendre finalValue sous 1.0 par intermittence, meme pendant la
+-- pire tempete ; en poussant l'amplitude nettement au-dessus de 1.0, on
+-- absorbe cette marge de bruit et on obtient un sway COLLE au maximum natif
+-- en permanence, sans aucun creux -- un resultat qu'aucune meteo reelle ne
+-- peut garantir. D'ou AMPLITUDE_MAX = 3.0.
+--
+-- VITESSE (par categorie) -- le moteur ne nous laisse controler qu'UNE SEULE
+-- valeur (windIntensity), jamais une frequence d'oscillation separee (rien
+-- d'equivalent n'est expose a Lua, voir l'historique des echecs en tete de
+-- fichier) -- donc pour obtenir une vraie vitesse reglable, ce mod fait
+-- lui-meme varier chaque cible de categorie dans le temps (onde
+-- sinusoidale) plutot que de forcer un plancher constant. Chaque cible
+-- oscille autour de son amplitude avec un battement fixe de
+-- +/-SWING_FRACTION (35%, PAS un 5e slider) a la frequence choisie ; a
+-- vitesse=0 (valeur par defaut), sin() vaut toujours 0 et la cible reste
+-- parfaitement constante.
+--
+-- ATTENTION (les 4 sliders) : windIntensity est une valeur GLOBALE
+-- reutilisee par d'autres systemes que le sway (son ambiant, particules...)
+-- -- decompilation non exhaustive sur ces autres usages, donc des valeurs
+-- tres au-dela de 1.0 (amplitude) pourraient avoir des effets de bord
+-- inattendus ailleurs. A tester en jeu.
+local AMPLITUDE_MIN  = 0
+local AMPLITUDE_MAX  = 3.0
+local AMPLITUDE_STEP = 0.05
+
+local SPEED_MIN     = 0     -- cycles par minute. 0 = statique (pas d'oscillation).
+local SPEED_MAX     = 20    -- 20 cycles/min = periode de 3s (rapide).
+local SPEED_STEP    = 0.5
+local DEFAULT_SPEED = 0
+
+local SWING_FRACTION = 0.35  -- battement +/- autour de l'amplitude, fixe (pas
+                              -- un reglage), applique aux deux categories :
+                              -- cible = amplitude * (1 + SWING_FRACTION *
+                              -- sin(phase)).
+
+local swayModOptions = nil
+local swayTreeAmplitudeSlider = nil
+local swayTreeSpeedSlider = nil
+local swayPlantAmplitudeSlider = nil
+local swayPlantSpeedSlider = nil
+
+-- Recupere le slider "id" sur le groupe d'options "opts" s'il existe deja
+-- (cas normal d'un hot reload sans changement d'id), sinon le cree. Sans ca,
+-- renommer/ajouter un id d'un hot reload a l'autre (ce qui arrive souvent en
+-- cours d'iteration -- vecu en pratique en passant de 2 a 4 sliders) laisse
+-- le nouveau slider bloque a nil pour de bon : PZAPI.ModOptions.Dict survit
+-- au reload, donc l'entree "WindTreeSway" existe deja, mais elle ne contient
+-- que les anciens id -- getOption(nouvelId) renvoie nil, et sans repli sur
+-- addSlider(), rien ne le cree jamais.
+local function ensureSlider(opts, id, name, min, max, step, default, tooltip)
+    local slider = opts:getOption(id)
+    if slider ~= nil then return slider end
+    return opts:addSlider(id, name, min, max, step, default, tooltip)
+end
+
+local function initModOptions()
+    if swayTreeAmplitudeSlider ~= nil and swayTreeSpeedSlider ~= nil
+        and swayPlantAmplitudeSlider ~= nil and swayPlantSpeedSlider ~= nil then
+        return
+    end
+    if PZAPI == nil or PZAPI.ModOptions == nil then return end
+
+    local ok, err = pcall(function()
+        -- PZAPI.ModOptions.Dict/.Data survivent a un hot reload (seul CE
+        -- chunk est reexecute, pas l'etat global de PZAPI) -- si l'entree
+        -- existe deja (reload en cours d'iteration), la reutiliser plutot
+        -- que de rappeler create(), qui n'a pas de dedup et dupliquerait la
+        -- section "Wind Tree Sway" dans le menu Options a chaque reload. Ca
+        -- a aussi l'avantage de preserver la position des curseurs choisie
+        -- par le joueur pendant qu'on itere sur le code. Chaque slider passe
+        -- ensuite par ensureSlider() (voir ci-dessus) pour etre cree s'il
+        -- manque encore (nouvel id jamais vu par ce groupe d'options).
+        local opts = PZAPI.ModOptions:getOptions("WindTreeSway")
+        local isNew = (opts == nil)
+        if isNew then
+            opts = PZAPI.ModOptions:create("WindTreeSway", "Wind Tree Sway")
+            opts:addDescription(
+                "Fait osciller arbres et/ou plantes par temps calme en forcant "
+                .. "un plancher de vent ambiant. Un seul signal de vent existe "
+                .. "cote moteur : monter l'amplitude des arbres au-dela du seuil "
+                .. "natif (~0.3) fait aussi bouger les plantes (seuil natif plus "
+                .. "bas, ~0.08) -- mais l'inverse n'est pas vrai, on peut faire "
+                .. "osciller les plantes seules. Amplitude peut depasser 1.0 (le "
+                .. "maximum de vent naturel) pour garantir un sway au maximum en "
+                .. "permanence, sans les creux dus au bruit du moteur. Vitesse=0 "
+                .. "= plancher constant ; au-dela, il oscille dans le temps -- "
+                .. "voir les tooltips des curseurs.")
+            opts:addTitle("Arbres")
+        end
+        swayModOptions = opts
+
+        swayTreeAmplitudeSlider = ensureSlider(opts,
+            "TreeAmplitude", "Amplitude (arbres)",
+            AMPLITUDE_MIN, AMPLITUDE_MAX, AMPLITUDE_STEP, DEFAULT_TREE_AMPLITUDE,
+            "Force du plancher de vent pour le seuil de sway des arbres (~0.3 "
+            .. "cote moteur). Au-dela de 1.0, le sway reste au maximum visuel "
+            .. "mais sans jamais redescendre. Fait aussi osciller les plantes "
+            .. "(seuil plus bas) -- impossible a eviter cote moteur.")
+        swayTreeSpeedSlider = ensureSlider(opts,
+            "TreeSpeed", "Vitesse (arbres)",
+            SPEED_MIN, SPEED_MAX, SPEED_STEP, DEFAULT_SPEED,
+            "A 0 (defaut), le plancher des arbres reste constant. Au-dela, il "
+            .. "oscille dans le temps (+/-35% autour de l'amplitude) a cette "
+            .. "frequence, en cycles par minute.")
+
+        if isNew then
+            opts:addSeparator()
+            opts:addTitle("Herbes et plantes")
+        end
+        swayPlantAmplitudeSlider = ensureSlider(opts,
+            "PlantAmplitude", "Amplitude (herbes/plantes)",
+            AMPLITUDE_MIN, AMPLITUDE_MAX, AMPLITUDE_STEP, DEFAULT_PLANT_AMPLITUDE,
+            "Force du plancher de vent pour le seuil de sway des plantes/herbes "
+            .. "(~0.08 cote moteur, plus bas que celui des arbres). Reste sous "
+            .. "~0.3 pour faire bouger les plantes SANS les arbres.")
+        swayPlantSpeedSlider = ensureSlider(opts,
+            "PlantSpeed", "Vitesse (herbes/plantes)",
+            SPEED_MIN, SPEED_MAX, SPEED_STEP, DEFAULT_SPEED,
+            "A 0 (defaut), le plancher des plantes reste constant. Au-dela, il "
+            .. "oscille dans le temps (+/-35% autour de l'amplitude) a cette "
+            .. "frequence, en cycles par minute.")
+    end)
+    if not ok then
+        log("initModOptions a echoue -> " .. tostring(err))
+        swayModOptions = nil
+        swayTreeAmplitudeSlider = nil
+        swayTreeSpeedSlider = nil
+        swayPlantAmplitudeSlider = nil
+        swayPlantSpeedSlider = nil
+    end
+end
+
+local function readSlider(slider, default)
+    if slider ~= nil then
+        local ok, value = pcall(function() return slider:getValue() end)
+        if ok and type(value) == "number" then
+            return value
+        end
+    end
+    return default
+end
+
+-- Cible oscillante pour une categorie donnee, a l'instant nowMs (ms horloge
+-- murale). A vitesse=0, sin(0)=0 en permanence -> cible = amplitude,
+-- constante. Sinon, oscille en continu entre amplitude*(1-SWING_FRACTION) et
+-- amplitude*(1+SWING_FRACTION).
+local function oscillate(amplitude, speedCpm, nowMs)
+    if speedCpm <= 0 then
+        return amplitude
+    end
+    local phase = (nowMs / 60000) * speedCpm * (2 * math.pi)
+    return amplitude * (1 + SWING_FRACTION * math.sin(phase))
+end
+
+-- Combine les 2 categories en UNE cible pour le plancher de vent unique du
+-- moteur : MAX des deux, puisqu'un seul signal existe cote moteur (voir le
+-- gros commentaire plus haut). Avec les defauts (plantes desactivees), ceci
+-- redonne exactement le comportement d'avant la separation en categories.
+local function getTargetWindFloor(nowMs)
+    local treeTarget = oscillate(
+        readSlider(swayTreeAmplitudeSlider, DEFAULT_TREE_AMPLITUDE),
+        readSlider(swayTreeSpeedSlider, DEFAULT_SPEED),
+        nowMs)
+    local plantTarget = oscillate(
+        readSlider(swayPlantAmplitudeSlider, DEFAULT_PLANT_AMPLITUDE),
+        readSlider(swayPlantSpeedSlider, DEFAULT_SPEED),
+        nowMs)
+    return math.max(treeTarget, plantTarget)
+end
+
+-- Enregistre le slider des le chargement du script (pas seulement a
+-- OnGameStart) : Options > Mods est accessible depuis le menu principal,
+-- avant meme de charger une partie, donc PZAPI.ModOptions:create() doit
+-- avoir ete appele des ce moment-la pour que le slider y apparaisse deja.
+initModOptions()
 
 -- L'option graphique "doWindSpriteEffects" (menu Options > Affichage > "Wind
 -- Sprite Effects") est DESACTIVEE PAR DEFAUT dans PZ (confirme par
@@ -145,6 +355,7 @@ local function onTick()
     if now - lastCheck < CHECK_MS then return end
     lastCheck = now
 
+    initModOptions()
     ensureWindSpriteEffectsEnabled()
 
     local ok, climate = pcall(getClimateManager)
@@ -156,7 +367,9 @@ local function onTick()
     local ok3, internal = pcall(function() return windFloat:getInternalValue() end)
     if not ok3 or type(internal) ~= "number" then return end
 
-    if internal < WIND_FLOOR then
+    local windFloor = getTargetWindFloor(now)
+
+    if internal < windFloor then
         -- IMPORTANT : ne PAS appeler setOverrideValue() ici. Sa vraie
         -- implementation (confirmee par decompilation) est
         --   isOverrideValue = v; isOverride = v;
@@ -164,23 +377,23 @@ local function onTick()
         -- exactement ce qui annulait silencieusement le setOverride()
         -- precedent (bug trouve via le diagnostic finalValue/windTickFinal :
         -- finalValue restait colle a internalValue au lieu de suivre
-        -- WIND_FLOOR). setOverride() seul active deja isOverride=true, et
+        -- le plancher). setOverride() seul active deja isOverride=true, et
         -- isOverrideValue reste a son defaut (false, mis une fois par le jeu
         -- via updateSandboxOverrides en Vanilla), ce qui est le comportement
         -- voulu (blend depuis internalValue, pas overrideInternal).
-        local okA, errA = pcall(function() windFloat:setOverride(WIND_FLOOR, INTERP) end)
+        local okA, errA = pcall(function() windFloat:setOverride(windFloor, INTERP) end)
         if not okA and not overrideErrorLogged then
             overrideErrorLogged = true
             log("setOverride a echoue -> " .. tostring(errA))
         end
         if not overriding then
             overriding = true
-            log(string.format("vent reel=%.2f < plancher=%.2f -> plancher de vent applique", internal, WIND_FLOOR))
+            log(string.format("vent reel=%.2f < plancher=%.2f -> plancher de vent applique", internal, windFloor))
         end
     elseif overriding then
         overriding = false
         pcall(function() windFloat:setEnableOverride(false) end)
-        log(string.format("vent reel=%.2f >= plancher=%.2f -> plancher de vent leve", internal, WIND_FLOOR))
+        log(string.format("vent reel=%.2f >= plancher=%.2f -> plancher de vent leve", internal, windFloor))
     end
 
     if WindTreeSway.debug and now - lastLog > 5000 then
@@ -193,7 +406,7 @@ local function onTick()
         local okO, coreOpt = pcall(function() return getCore():getOptionDoWindSpriteEffects() end)
         log(string.format(
             "vent reel=%.2f (plancher=%.2f) -> override actif=%s | finalValue=%s | windTickFinal=%s | doWindSpriteEffects=%s",
-            internal, WIND_FLOOR, tostring(overriding),
+            internal, windFloor, tostring(overriding),
             okF and string.format("%.2f", finalVal) or ("ERR:" .. tostring(finalVal)),
             okT and string.format("%.2f", tickFinal) or ("ERR:" .. tostring(tickFinal)),
             okO and tostring(coreOpt) or ("ERR:" .. tostring(coreOpt))))
@@ -203,7 +416,14 @@ end
 Events.OnTick.Add(onTick)
 
 Events.OnGameStart.Add(function()
-    log("Mod charge (build 42.20.0). Plancher de vent ambiant = " .. tostring(WIND_FLOOR) .. ".")
+    initModOptions()
+    log(string.format(
+        "Mod charge (build 42.20.0). Arbres: amplitude=%.2f vitesse=%.1f cpm | "
+        .. "Plantes: amplitude=%.2f vitesse=%.1f cpm.",
+        readSlider(swayTreeAmplitudeSlider, DEFAULT_TREE_AMPLITUDE),
+        readSlider(swayTreeSpeedSlider, DEFAULT_SPEED),
+        readSlider(swayPlantAmplitudeSlider, DEFAULT_PLANT_AMPLITUDE),
+        readSlider(swayPlantSpeedSlider, DEFAULT_SPEED)))
 end)
 
 -- Opt-in pour le mod dev "[Dev] Hot Reload Mods (local)" (voir dev-reload.ps1
