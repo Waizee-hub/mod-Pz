@@ -175,6 +175,23 @@ local WIND_INTENSITY_ID = 6  -- index de ClimateManager:getClimateFloat(), confi
 -- -- decompilation non exhaustive sur ces autres usages, donc des valeurs
 -- tres au-dela de 1.0 (amplitude) pourraient avoir des effets de bord
 -- inattendus ailleurs. A tester en jeu.
+--
+-- CAS CONFIRME (signale par l'utilisateur, verifie par decompilation) :
+-- l'animation des vagues de l'eau (zombie.iso.IsoWater.class) accelere elle
+-- aussi quand ce mod force le vent. Confirme par le constant pool de
+-- IsoWater.class : elle importe directement
+-- zombie.iso.weather.ClimateManager et appelle
+-- ClimateManager.getWindIntensity() pour calculer waterWindIntensity /
+-- waterWindAngle / waterWindSpeed -- exactement la meme valeur globale que
+-- ce mod modifie pour faire osciller arbres/plantes, sans seuil d'activation
+-- separe comme pour la vegetation. IsoWater.class n'a par ailleurs AUCUNE
+-- annotation @UsedFromLua (grep du constant pool, zero occurrence) -- aucune
+-- de ses methodes n'est exposee a Lua, donc impossible de lui donner une
+-- valeur de vent differente de celle du reste du jeu depuis un script. CE
+-- N'EST PAS SEPARABLE avec l'API de modding Lua : forcer le vent pour les
+-- arbres/plantes accelere necessairement aussi les vagues -- seul un patch
+-- du .class Java lui-meme (hors du perimetre d'un mod Lua standard)
+-- permettrait de les decoupler.
 local AMPLITUDE_MIN  = 0
 local AMPLITUDE_MAX  = 3.0
 local AMPLITUDE_STEP = 0.05

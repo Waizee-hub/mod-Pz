@@ -215,3 +215,18 @@ Si le sandbox est configure sur un mode "Endless Weather" (option
 interne pour forcer un vent constant -- notre plancher pourrait alors se
 superposer a ce reglage. Non teste explicitement ; a surveiller si l'effet
 semble incoherent avec ce sandbox option actif.
+
+**Effet de bord confirme et NON separable : les vagues de l'eau accelerent
+aussi.** Signale par l'utilisateur, verifie par decompilation de
+`zombie.iso.IsoWater.class` (build 42.20.0) : cette classe importe
+directement `ClimateManager` et appelle `getWindIntensity()` pour calculer
+la vitesse/l'angle des vagues (`waterWindSpeed`, `waterWindAngle`,
+`waterWindIntensity`) -- exactement la meme valeur globale que ce mod force
+pour les arbres/plantes, sans seuil d'activation separe comme pour la
+vegetation. `IsoWater.class` n'a par ailleurs **aucune** methode annotee
+`@UsedFromLua` (verifie dans son constant pool) -- rien n'est expose a Lua
+pour lui donner une valeur de vent independante. Consequence : monter
+l'amplitude des sliders accelere systematiquement aussi l'animation de
+l'eau, et **rien dans l'API de modding Lua ne permet de decoupler les
+deux** -- seul un patch du `.class` Java lui-meme (hors du perimetre d'un
+mod Lua standard) le permettrait.
