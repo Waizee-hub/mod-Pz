@@ -98,6 +98,7 @@ WindTreeSway/
 │           └── client/
 │               └── WindTreeSway_client.lua
 ├── dev-reload.ps1              (dev, hot reload)
+├── publish-workshop.ps1        (dev, publication Steam Workshop)
 └── common/                     (vide, doit exister -- exige par le Build 42)
 ```
 
@@ -125,6 +126,39 @@ installe localement dans `~/Zomboid/mods/ModHotReloadLocal`.
 3. Lance `dev-reload.ps1` (racine du mod) : ca synchronise vers
    `~/Zomboid/mods/WindTreeSway` et declenche le rechargement en jeu (dans la
    seconde qui suit, jeu non en pause).
+
+## Publication Steam Workshop
+
+L'uploader Workshop de PZ (bouton "Workshop" du menu Mods en jeu) attend une
+structure precise sous `<install PZ>/Workshop/WindTreeSway/` :
+
+```
+Workshop/WindTreeSway/
+├── workshop.txt                 (titre, description, tags, visibilite)
+├── preview.png                  (miniature affichee sur la page Workshop)
+└── Contents/
+    └── mods/
+        └── WindTreeSway/        (copie du mod, sans les fichiers de dev)
+            ├── 42/
+            │   ├── mod.info
+            │   ├── poster.png
+            │   └── media/lua/client/WindTreeSway_client.lua
+            └── common/
+```
+
+(confirme en comparant avec `Workshop/ModTemplate/`, deja publie avec cette
+structure).
+
+1. Edite `workshop.txt` et `preview.png` directement sous
+   `Workshop/WindTreeSway/` (pas dans ce depot -- ce sont des fichiers de
+   publication, geres a la main cote installation du jeu, jamais synchronises
+   par un script).
+2. Lance `publish-workshop.ps1` (racine du mod) apres chaque changement a
+   publier : ca synchronise vers `Workshop/WindTreeSway/Contents/mods/
+   WindTreeSway/`, en excluant les fichiers de dev (`dev-reload.ps1`,
+   `publish-workshop.ps1`, `README.md`, `reload.trigger`, `reload.filelist`).
+3. Utilise le bouton Workshop en jeu (Mods > Workshop) pour envoyer/mettre a
+   jour l'item.
 
 ## Reglages
 
