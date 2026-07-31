@@ -152,21 +152,32 @@ garde les 4 curseurs perceptibles independamment, au prix de ne jamais
 isoler parfaitement "arbres actifs, plantes immobiles".
 
 - **Amplitude (arbres / herbes-plantes)** (0 a **3.0**, defaut 0.38 pour les
-  arbres, 0 -- desactive -- pour les plantes) : force du plancher de vent
+  arbres, 0 -- desactive -- pour les plantes) : le pic du plancher de vent
   ambiant pour cette categorie (l'ancien `WIND_FLOOR`, seul reglage de la
-  toute premiere version). L'echelle naturelle du vent (`ClimateManager:
-  getWindIntensity()`) va de 0 a 1 -- aller au-dela est volontaire : le
+  toute premiere version). A vitesse=0, c'est un plancher **constant** a
+  cette valeur -- l'echelle naturelle du vent (`ClimateManager:
+  getWindIntensity()`) va de 0 a 1, et aller au-dela est volontaire : le
   moteur clampe `windTickFinal` a 1.0 (voir `updateWindTick()`), donc le
   rendu du sway ne s'intensifie plus au-dela de 1.0, mais ca absorbe la
   marge de bruit que le moteur ajoute meme en pleine tempete, garantissant
   un sway colle au maximum natif EN PERMANENCE, sans les creux intermittents
-  qu'aucune meteo reelle ne peut eviter.
+  qu'aucune meteo reelle ne peut eviter. A vitesse>0, cette valeur devient le
+  pic de chaque rafale (voir Vitesse ci-dessous) plutot qu'un plancher fixe.
 - **Vitesse (arbres / herbes-plantes)** (0 a 20 cycles/minute, defaut 0) : a
-  0, le plancher de cette categorie reste parfaitement constant. Au-dela, le
-  mod fait lui-meme osciller son plancher dans le temps (onde sinusoidale,
-  +/-35% autour de l'amplitude de la categorie) a la frequence choisie -- le
-  moteur n'expose aucune frequence de sway reglable a Lua (voir l'historique
-  des echecs en tete du fichier lua), donc c'est le mod qui la simule.
+  0, le plancher de cette categorie reste parfaitement constant (voir
+  Amplitude). Au-dela, le mod fait des **rafales** : le plancher part de 0
+  (calme), monte jusqu'a l'amplitude, puis redescend a 0, en boucle a la
+  frequence choisie -- le moteur n'expose aucune frequence de sway reglable
+  a Lua (voir l'historique des echecs en tete du fichier lua), donc c'est le
+  mod qui la simule. Premiere version testee : une onde sinusoidale
+  symetrique autour de l'amplitude (+/-35%) -- abandonnee car au-dela d'une
+  amplitude d'environ 1.5, meme le creux de la sinusoide restait au-dessus
+  de 1.0, et le clamp du moteur ecrasait alors toute la courbe a 1.0 en
+  permanence : vitesse=0 et vitesse=20 donnaient EXACTEMENT le meme resultat
+  visuel (constate en jeu, confirme par les logs : le plancher variait mais
+  `windTickFinal` restait fige a 1.00). Les rafales (0 -> amplitude -> 0)
+  passent toujours par un vrai creux, donc la vitesse reste visible quelle
+  que soit l'amplitude choisie pour le pic.
 
 Avec les valeurs par defaut (plantes desactivees), le comportement est
 identique a la toute premiere version du mod (arbres seulement, plancher
@@ -184,9 +195,6 @@ bord ailleurs. A surveiller en jeu si un curseur est pousse tres haut.
   valeurs par defaut des sliders ci-dessus (voir `AMPLITUDE_MIN`/`MAX`/`STEP`
   et `SPEED_MIN`/`MAX`/`STEP` juste apres pour ajuster les bornes des
   curseurs, partagees par les deux categories).
-- `SWING_FRACTION` : amplitude du battement (+/-35% par defaut) que chaque
-  slider Vitesse applique autour de l'amplitude de sa categorie --
-  volontairement pas un 5e slider, pour garder l'interface simple.
 - `CHECK_MS` : intervalle entre deux verifications/reapplications du
   plancher (reduit a 100ms pour que l'oscillation controlee par les sliders
   Vitesse paraisse fluide plutot qu'en marches d'escalier).

@@ -145,12 +145,30 @@ local WIND_INTENSITY_ID = 6  -- index de ClimateManager:getClimateFloat(), confi
 -- valeur (windIntensity), jamais une frequence d'oscillation separee (rien
 -- d'equivalent n'est expose a Lua, voir l'historique des echecs en tete de
 -- fichier) -- donc pour obtenir une vraie vitesse reglable, ce mod fait
--- lui-meme varier chaque cible de categorie dans le temps (onde
--- sinusoidale) plutot que de forcer un plancher constant. Chaque cible
--- oscille autour de son amplitude avec un battement fixe de
--- +/-SWING_FRACTION (35%, PAS un 5e slider) a la frequence choisie ; a
--- vitesse=0 (valeur par defaut), sin() vaut toujours 0 et la cible reste
--- parfaitement constante.
+-- lui-meme varier chaque cible de categorie dans le temps (rafales) plutot
+-- que de forcer un plancher constant.
+--
+-- PREMIERE VERSION (abandonnee) : cible = amplitude*(1 + 35% * sin(phase)),
+-- une sinusoide SYMETRIQUE autour de l'amplitude. Probleme constate en jeu
+-- par l'utilisateur : au-dela d'une amplitude d'environ 1.5, MEME LE CREUX
+-- de la sinusoide (amplitude*0.65) depasse deja 1.0 -- or le moteur calcule
+-- windTickFinal = clamp01(...), donc toute la sinusoide se retrouve
+-- ecrasee a 1.0 en permanence, quelle que soit la phase. Vitesse=0 ou
+-- vitesse=20 rendaient alors EXACTEMENT le meme resultat visuel -- confirme
+-- par les logs (plancher variant de 1.2 a 6.9 selon les lignes, mais
+-- windTickFinal fige a 1.00 partout).
+--
+-- VERSION ACTUELLE : cible = amplitude * (0.5 - 0.5*cos(phase)), une
+-- "rafale" qui part de 0 (phase=0), monte jusqu'a l'amplitude (phase=pi),
+-- puis redescend a 0 (phase=2pi) -- PAS une sinusoide symetrique. Comme le
+-- creux vaut TOUJOURS 0 quelle que soit l'amplitude, le plancher repasse a
+-- chaque cycle sous la meteo reelle (le mod desactive alors l'override,
+-- cf. onTick -- la vraie meteo, calme, s'affiche un instant) avant de
+-- remonter vers le pic. La vitesse reste donc TOUJOURS visible (le rythme
+-- calme/rafale change avec elle), quelle que soit l'amplitude choisie pour
+-- le pic -- au prix de perdre, quand vitesse>0, la garantie "toujours au
+-- maximum sans le moindre creux" (qui ne s'applique plus qu'a vitesse=0,
+-- ou la cible reste bien une constante -- voir oscillate()).
 --
 -- ATTENTION (les 4 sliders) : windIntensity est une valeur GLOBALE
 -- reutilisee par d'autres systemes que le sway (son ambiant, particules...)
@@ -165,11 +183,6 @@ local SPEED_MIN     = 0     -- cycles par minute. 0 = statique (pas d'oscillatio
 local SPEED_MAX     = 20    -- 20 cycles/min = periode de 3s (rapide).
 local SPEED_STEP    = 0.5
 local DEFAULT_SPEED = 0
-
-local SWING_FRACTION = 0.35  -- battement +/- autour de l'amplitude, fixe (pas
-                              -- un reglage), applique aux deux categories :
-                              -- cible = amplitude * (1 + SWING_FRACTION *
-                              -- sin(phase)).
 
 local swayModOptions = nil
 local swayTreeAmplitudeSlider = nil
@@ -220,12 +233,16 @@ local function initModOptions()
                 .. "l'amplitude des arbres au-dela du seuil natif (~0.3) fait "
                 .. "aussi bouger les plantes (seuil natif plus bas, ~0.08), mais "
                 .. "l'inverse n'est pas vrai : on peut garder les arbres "
-                .. "immobiles et faire osciller les plantes seules. Amplitude "
-                .. "peut depasser 1.0 (le maximum de vent naturel) pour garantir "
-                .. "un sway au maximum en permanence, sans les creux dus au "
-                .. "bruit du moteur. Vitesse=0 = plancher constant pour cette "
-                .. "categorie ; au-dela, il oscille dans le temps, en s'ajoutant "
-                .. "a l'autre categorie -- voir les tooltips des curseurs.")
+                .. "immobiles et faire osciller les plantes seules. A "
+                .. "vitesse=0, le plancher d'une categorie reste constant (son "
+                .. "amplitude peut depasser 1.0, le maximum de vent naturel, "
+                .. "pour garantir un sway au maximum en permanence). Des que "
+                .. "vitesse>0, cette categorie fait plutot des rafales : le "
+                .. "plancher part de calme, monte jusqu'a l'amplitude, "
+                .. "redescend a calme, en boucle a la frequence choisie -- "
+                .. "ainsi la vitesse reste toujours visible, quelle que soit "
+                .. "l'amplitude choisie pour le pic -- voir les tooltips des "
+                .. "curseurs.")
             opts:addTitle("Arbres")
         end
         swayModOptions = opts
@@ -233,16 +250,19 @@ local function initModOptions()
         swayTreeAmplitudeSlider = ensureSlider(opts,
             "TreeAmplitude", "Amplitude (arbres)",
             AMPLITUDE_MIN, AMPLITUDE_MAX, AMPLITUDE_STEP, DEFAULT_TREE_AMPLITUDE,
-            "Force du plancher de vent pour le seuil de sway des arbres (~0.3 "
-            .. "cote moteur). Au-dela de 1.0, le sway reste au maximum visuel "
-            .. "mais sans jamais redescendre. Fait aussi osciller les plantes "
-            .. "(seuil plus bas) -- impossible a eviter cote moteur.")
+            "Pic du plancher de vent pour le seuil de sway des arbres (~0.3 "
+            .. "cote moteur). A vitesse=0, plancher constant a cette valeur -- "
+            .. "au-dela de 1.0, le sway reste au maximum visuel sans jamais "
+            .. "redescendre. A vitesse>0, c'est le pic de chaque rafale (le "
+            .. "plancher revient a calme entre deux). Fait aussi osciller les "
+            .. "plantes (seuil plus bas) -- impossible a eviter cote moteur.")
         swayTreeSpeedSlider = ensureSlider(opts,
             "TreeSpeed", "Vitesse (arbres)",
             SPEED_MIN, SPEED_MAX, SPEED_STEP, DEFAULT_SPEED,
-            "A 0 (defaut), le plancher des arbres reste constant. Au-dela, il "
-            .. "oscille dans le temps (+/-35% autour de l'amplitude) a cette "
-            .. "frequence, en cycles par minute.")
+            "A 0 (defaut), le plancher des arbres reste constant a son "
+            .. "amplitude. Au-dela, il fait des rafales dans le temps (calme "
+            .. "-> amplitude -> calme, en boucle) a cette frequence, en cycles "
+            .. "par minute -- reste visible meme a forte amplitude.")
 
         if isNew then
             opts:addSeparator()
@@ -251,15 +271,18 @@ local function initModOptions()
         swayPlantAmplitudeSlider = ensureSlider(opts,
             "PlantAmplitude", "Amplitude (herbes/plantes)",
             AMPLITUDE_MIN, AMPLITUDE_MAX, AMPLITUDE_STEP, DEFAULT_PLANT_AMPLITUDE,
-            "Force du plancher de vent pour le seuil de sway des plantes/herbes "
+            "Pic du plancher de vent pour le seuil de sway des plantes/herbes "
             .. "(~0.08 cote moteur, plus bas que celui des arbres). Reste sous "
-            .. "~0.3 pour faire bouger les plantes SANS les arbres.")
+            .. "~0.3 pour faire bouger les plantes SANS les arbres. A "
+            .. "vitesse>0, c'est le pic de chaque rafale (le plancher revient "
+            .. "a calme entre deux).")
         swayPlantSpeedSlider = ensureSlider(opts,
             "PlantSpeed", "Vitesse (herbes/plantes)",
             SPEED_MIN, SPEED_MAX, SPEED_STEP, DEFAULT_SPEED,
-            "A 0 (defaut), le plancher des plantes reste constant. Au-dela, il "
-            .. "oscille dans le temps (+/-35% autour de l'amplitude) a cette "
-            .. "frequence, en cycles par minute.")
+            "A 0 (defaut), le plancher des plantes reste constant a son "
+            .. "amplitude. Au-dela, il fait des rafales dans le temps (calme "
+            .. "-> amplitude -> calme, en boucle) a cette frequence, en cycles "
+            .. "par minute -- reste visible meme a forte amplitude.")
     end)
     if not ok then
         log("initModOptions a echoue -> " .. tostring(err))
@@ -281,16 +304,18 @@ local function readSlider(slider, default)
     return default
 end
 
--- Cible oscillante pour une categorie donnee, a l'instant nowMs (ms horloge
--- murale). A vitesse=0, sin(0)=0 en permanence -> cible = amplitude,
--- constante. Sinon, oscille en continu entre amplitude*(1-SWING_FRACTION) et
--- amplitude*(1+SWING_FRACTION).
+-- Cible "rafale" pour une categorie donnee, a l'instant nowMs (ms horloge
+-- murale). A vitesse=0, cible = amplitude, constante (voir le gros
+-- commentaire plus haut sur les 2 versions testees). Sinon, part de 0,
+-- monte jusqu'a amplitude, puis redescend a 0 -- le creux vaut TOUJOURS 0,
+-- quelle que soit l'amplitude, donc la vitesse reste visible meme a forte
+-- amplitude (contrairement a l'ancienne sinusoide symetrique).
 local function oscillate(amplitude, speedCpm, nowMs)
     if speedCpm <= 0 then
         return amplitude
     end
     local phase = (nowMs / 60000) * speedCpm * (2 * math.pi)
-    return amplitude * (1 + SWING_FRACTION * math.sin(phase))
+    return amplitude * (0.5 - 0.5 * math.cos(phase))
 end
 
 -- Combine les 2 categories en UNE cible pour le plancher de vent unique du
