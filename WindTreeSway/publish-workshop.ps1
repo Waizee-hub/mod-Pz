@@ -27,4 +27,16 @@ if ($LASTEXITCODE -ge 8) {
     exit 1
 }
 
-Write-Output "OK - $dest synchronise."
+# L'uploader Steam Workshop de PZ (SteamWorkshopItem.validateContents(), voir
+# le message "UI_WorkshopError_MissingModDotInfo") exige mod.info (et son
+# poster) A LA RACINE du dossier du mod dans Contents/mods/ -- contrairement
+# au jeu, il ne va pas le chercher dans le sous-dossier versionne 42/. Confirme
+# en comparant avec un vrai mod Build 42 deja publie sur le Workshop
+# (DisableWelcomeMessage, present dans steamapps/workshop/content/108600/) :
+# il duplique mod.info/poster a la racine ET dans 42/. Cette copie est
+# PUREMENT pour satisfaire l'uploader -- le jeu continue a utiliser
+# 42/mod.info comme version reelle en jeu.
+Copy-Item (Join-Path $dest "42\mod.info") (Join-Path $dest "mod.info") -Force
+Copy-Item (Join-Path $dest "42\poster.png") (Join-Path $dest "poster.png") -Force
+
+Write-Output "OK - $dest synchronise (+ mod.info/poster.png dupliques a la racine pour l'uploader Workshop)."

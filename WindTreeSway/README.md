@@ -139,6 +139,8 @@ Workshop/WindTreeSway/
 └── Contents/
     └── mods/
         └── WindTreeSway/        (copie du mod, sans les fichiers de dev)
+            ├── mod.info          <- duplique de 42/mod.info, voir plus bas
+            ├── poster.png        <- duplique de 42/poster.png, voir plus bas
             ├── 42/
             │   ├── mod.info
             │   ├── poster.png
@@ -146,8 +148,22 @@ Workshop/WindTreeSway/
             └── common/
 ```
 
-(confirme en comparant avec `Workshop/ModTemplate/`, deja publie avec cette
-structure).
+**Piege rencontre et corrige :** au premier essai, l'uploader affichait
+"Votre mod n'a pas de fichier mod.info" alors que `42/mod.info` existait bien
+et que le mod se chargeait normalement en jeu. Cause : contrairement au jeu,
+`SteamWorkshopItem.validateContents()` (cote uploader) ne sait pas aller
+chercher `mod.info`/`poster.png` dans le sous-dossier versionne `42/` -- il
+les attend directement a la racine du dossier du mod. Confirme en comparant
+avec un vrai mod Build 42 deja publie sur le Workshop (`DisableWelcomeMessage`,
+visible dans `steamapps/workshop/content/108600/...` une fois souscrit) : il
+duplique `mod.info` (et son poster) a la racine ET dans `42/`, avec un
+contenu identique. `publish-workshop.ps1` fait maintenant cette duplication
+automatiquement a chaque publication -- le jeu continue d'utiliser
+`42/mod.info` comme version reelle en jeu, la copie a la racine ne sert qu'a
+satisfaire l'uploader.
+
+(structure de base confirmee en comparant avec `Workshop/ModTemplate/`, deja
+publie).
 
 1. Edite `workshop.txt` et `preview.png` directement sous
    `Workshop/WindTreeSway/` (pas dans ce depot -- ce sont des fichiers de
@@ -155,8 +171,9 @@ structure).
    par un script).
 2. Lance `publish-workshop.ps1` (racine du mod) apres chaque changement a
    publier : ca synchronise vers `Workshop/WindTreeSway/Contents/mods/
-   WindTreeSway/`, en excluant les fichiers de dev (`dev-reload.ps1`,
-   `publish-workshop.ps1`, `README.md`, `reload.trigger`, `reload.filelist`).
+   WindTreeSway/` (en excluant les fichiers de dev : `dev-reload.ps1`,
+   `publish-workshop.ps1`, `README.md`, `reload.trigger`, `reload.filelist`),
+   puis duplique `mod.info`/`poster.png` a la racine du mod.
 3. Utilise le bouton Workshop en jeu (Mods > Workshop) pour envoyer/mettre a
    jour l'item.
 
