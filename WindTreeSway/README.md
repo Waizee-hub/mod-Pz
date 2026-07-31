@@ -145,8 +145,11 @@ physique incontournable : on peut faire osciller les plantes **sans** les
 arbres (en restant sous ~0.3), mais **pas l'inverse** -- des qu'on force
 assez de vent pour faire bouger un arbre, on a deja largement depasse le
 seuil des plantes, qui bougent donc aussi. Le mod calcule une cible par
-categorie puis applique au moteur leur **maximum** -- le plus proche d'un
-controle independant que le moteur permet.
+categorie puis les **additionne** (pas un maximum -- teste en jeu : avec un
+maximum, la categorie dont la cible est la plus petite est entierement
+masquee, amplitude ET vitesse, tant qu'elle reste sous l'autre) -- la somme
+garde les 4 curseurs perceptibles independamment, au prix de ne jamais
+isoler parfaitement "arbres actifs, plantes immobiles".
 
 - **Amplitude (arbres / herbes-plantes)** (0 a **3.0**, defaut 0.38 pour les
   arbres, 0 -- desactive -- pour les plantes) : force du plancher de vent

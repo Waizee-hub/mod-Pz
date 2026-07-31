@@ -120,8 +120,13 @@ local WIND_INTENSITY_ID = 6  -- index de ClimateManager:getClimateFloat(), confi
 -- peut PAS faire osciller les arbres sans que les plantes suivent aussi
 -- (des qu'on depasse ~0.3, on a deja largement depasse ~0.08). Ce mod calcule
 -- donc une cible par categorie (chacune avec sa propre amplitude/vitesse) et
--- applique au moteur leur MAXIMUM (voir getTargetWindFloor()) -- au plus
--- proche d'un controle independant que le moteur permet.
+-- les ADDITIONNE (voir getTargetWindFloor()) -- au plus proche d'un controle
+-- independant que le moteur permet. Testee en jeu : un MAX plutot qu'une
+-- somme masque completement la categorie dont la cible instantanee est la
+-- plus petite (son amplitude ET sa vitesse deviennent invisibles tant que
+-- l'autre categorie domine) -- la somme garde toujours les deux
+-- contributions perceptibles, au prix de ne jamais isoler parfaitement
+-- "arbres actifs, plantes immobiles" (cf. plus haut).
 --
 -- AMPLITUDE (par categorie) -- meme role que l'ancien slider unique : la
 -- force du plancher de vent force par temps calme pour cette categorie. Les
@@ -210,14 +215,17 @@ local function initModOptions()
             opts:addDescription(
                 "Fait osciller arbres et/ou plantes par temps calme en forcant "
                 .. "un plancher de vent ambiant. Un seul signal de vent existe "
-                .. "cote moteur : monter l'amplitude des arbres au-dela du seuil "
-                .. "natif (~0.3) fait aussi bouger les plantes (seuil natif plus "
-                .. "bas, ~0.08) -- mais l'inverse n'est pas vrai, on peut faire "
-                .. "osciller les plantes seules. Amplitude peut depasser 1.0 (le "
-                .. "maximum de vent naturel) pour garantir un sway au maximum en "
-                .. "permanence, sans les creux dus au bruit du moteur. Vitesse=0 "
-                .. "= plancher constant ; au-dela, il oscille dans le temps -- "
-                .. "voir les tooltips des curseurs.")
+                .. "cote moteur : les deux categories S'ADDITIONNENT dans ce "
+                .. "signal (ce n'est jamais l'une OU l'autre) -- monter "
+                .. "l'amplitude des arbres au-dela du seuil natif (~0.3) fait "
+                .. "aussi bouger les plantes (seuil natif plus bas, ~0.08), mais "
+                .. "l'inverse n'est pas vrai : on peut garder les arbres "
+                .. "immobiles et faire osciller les plantes seules. Amplitude "
+                .. "peut depasser 1.0 (le maximum de vent naturel) pour garantir "
+                .. "un sway au maximum en permanence, sans les creux dus au "
+                .. "bruit du moteur. Vitesse=0 = plancher constant pour cette "
+                .. "categorie ; au-dela, il oscille dans le temps, en s'ajoutant "
+                .. "a l'autre categorie -- voir les tooltips des curseurs.")
             opts:addTitle("Arbres")
         end
         swayModOptions = opts
@@ -286,9 +294,21 @@ local function oscillate(amplitude, speedCpm, nowMs)
 end
 
 -- Combine les 2 categories en UNE cible pour le plancher de vent unique du
--- moteur : MAX des deux, puisqu'un seul signal existe cote moteur (voir le
--- gros commentaire plus haut). Avec les defauts (plantes desactivees), ceci
--- redonne exactement le comportement d'avant la separation en categories.
+-- moteur : SOMME des deux (pas MAX). Teste en jeu : avec un MAX, la
+-- categorie dont la cible instantanee est la plus petite est entierement
+-- masquee -- monter/baisser son amplitude ne change RIEN tant qu'elle reste
+-- en-dessous de l'autre, et sa vitesse ne devient "visible" que si l'autre
+-- categorie retombe en-dessous par coincidence (constate par le joueur : les
+-- sliders plantes semblaient inertes, et la vitesse des deux categories
+-- paraissait liee). Avec une somme, chaque categorie ajoute TOUJOURS sa
+-- propre contribution (son propre battement, a sa propre vitesse) par-dessus
+-- l'autre, donc les 4 sliders restent perceptibles independamment. Avec les
+-- defauts (plantes desactivees = amplitude 0), la somme redonne exactement
+-- le comportement d'avant la separation en categories (0.38 + 0 = 0.38).
+-- Limite qui reste incontournable (voir le gros commentaire plus haut) :
+-- une fois la somme au-dela du seuil de sway des arbres (~0.3), les arbres
+-- suivent forcement les deux contributions cumulees -- on ne peut toujours
+-- pas isoler "arbres actifs, plantes immobiles".
 local function getTargetWindFloor(nowMs)
     local treeTarget = oscillate(
         readSlider(swayTreeAmplitudeSlider, DEFAULT_TREE_AMPLITUDE),
@@ -298,7 +318,7 @@ local function getTargetWindFloor(nowMs)
         readSlider(swayPlantAmplitudeSlider, DEFAULT_PLANT_AMPLITUDE),
         readSlider(swayPlantSpeedSlider, DEFAULT_SPEED),
         nowMs)
-    return math.max(treeTarget, plantTarget)
+    return treeTarget + plantTarget
 end
 
 -- Enregistre le slider des le chargement du script (pas seulement a
